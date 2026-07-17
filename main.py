@@ -31,7 +31,8 @@ REGEX_PATTERNS = {
     "EMAIL": r"\b[\w\.-]+@[\w\.-]+\.\w{2,4}\b",
     "PHONE": r"\b\d{3}[-.\s]??\d{3}[-.\s]??\d{4}\b",
     "OBFUSCATED_NUM": r"(?:\d[\s\-.]*){7,15}", # Captures digits separated by spaces, dashes, or dots
-    "OBFUSCATED_WORD": r"\b(?:[a-zA-Z]\.[\s]*){3,}[a-zA-Z]\b" # Captures letters separated by dots or spaces (e.g., J.o.h.n)
+    "OBFUSCATED_WORD": r"\b(?:[a-zA-Z]\.[\s]*){3,}[a-zA-Z]\b", # Captures letters separated by dots or spaces (e.g., J.o.h.n)
+    "LEGAL_CASE": r"\b([A-Z][\w\.\-]+(?:\s+[A-Z][\w\.\-]+)*)\s+v[s]?\."
 }
 
 # force expected incoming data structure
@@ -39,6 +40,7 @@ class ProxyRequest(BaseModel):
     prompt: str
     model: str = "gpt-3.5-turbo" # using turbo for now for cheap developemnt
 
+# Helper function: Performs SLM deep scan, currently using Llama3.1
 async def perform_deep_scan(text: str) -> set:    
     # Deep scan using Llama3.1 via Ollama
     # We must override the conversational saftey guardrails that are normally up to instantly...
@@ -104,7 +106,29 @@ async def perform_deep_scan(text: str) -> set:
         raise HTTPException(status_code=500, detail="Local SLM inspection failed.")
 
     return detected_entities
+
+# Helper function: Replaces sensitive entities with tokens and maps them to temporary vault.
+def mask_entities(text: str, entities: set) -> tuple[str, dict]:
+    vault = {}
+    masked_text = text
+
+    sorted_entities = sorted(list(entities), key=len, reverse=True) # sort by length
     
+    for i, entity in enumerate(sorted_entities, start=1): 
+        token = f"[SECURE_TOKEN_{i}]" # currently replace redacted info with "SECURE_TOKEN"
+        vault[token] = entity
+        masked_text = masked_text.replace(entity, token)
+        
+    return masked_text, vault
+
+# Helper function: Replace sensitive info back into the LLM's response using the vault
+def unmask_entities(text: str, vault: dict) -> str:
+    unmasked_text = text
+    for token, original_entity in vault.items():
+        unmasked_text = unmasked_text.replace(token, original_entity)
+    return unmasked_text
+
+# FastAPI endpoint currently set to intercept OpenAI requests
 @app.post("/v1/chat/completions")
 async def intercept_and_route(request: ProxyRequest):
     print(f"--> Received prompt: {request.prompt}")
@@ -113,12 +137,20 @@ async def intercept_and_route(request: ProxyRequest):
 
     # First, hard check for formatted PII/SPII using regex
     for label, pattern in REGEX_PATTERNS.items():
-        matches = re.findall(pattern, request.prompt)
-        detected_entities.update(matches)
+        for match in re.finditer(pattern, request.prompt):
+            # For LEGAL_CASE, we only want the capture group (the plaintiff name)
+            if label == "LEGAL_CASE":
+                found_string = match.group(1).strip()
+            # For everything else, take the full match and strip trailing noise
+            else:
+                found_string = match.group(0).strip(" .,;")
+            
+            detected_entities.add(found_string)
+            
     if detected_entities:
         print(f"--> Regex found: {detected_entities}")
 
-    # Next, quick scan for PII/SPII using spaCy (Contextual Analysis)
+    # Next, quick scan for PII/SPII using spaCy
     doc = nlp(request.prompt)
     spacy_findings = set()
     for ent in doc.ents:
@@ -156,28 +188,46 @@ async def intercept_and_route(request: ProxyRequest):
     # Final print of everything flagged by 3-step scanning process
     print(f"--> Total entities flagged for redaction: {detected_entities}")
 
-    # If sensitive information detected, fully block processing and communication with LLM.
+    # If sensitive information detected, redact information
     if detected_entities:
-        print(f"FIREWALL TRIGGERED! Preventing communication to LLM")
-        raise HTTPException(
-            status_code=403, 
-            detail=f"Zero-Trust Engine blocked request. PII detected: {list(detected_entities)}"
-        )
+        print(f"--> Initializing Ephemeral Vault...")
+        masked_prompt, vault = mask_entities(request.prompt, detected_entities)
+        print(f"--> Masked Prompt Sent to OpenAI: {masked_prompt}")
+    else:
+        masked_prompt = request.prompt
+        vault = {}
 
-    # If no sensitive info detected, allow traffic to LLM.
     try:
+        # Forward the entirely masked prompt to the external LLM
         response = await external_client.chat.completions.create(
             model=request.model,
             messages=[
-                {"role": "system", "content": "You are a helpful assistant."},
-                {"role": "user", "content": request.prompt}
+                {
+                    "role": "system", 
+                    "content": (
+                        "You are an enterprise business intelligence assistant. The text you receive has been "
+                        "automatically sanitized for privacy compliance using secure placeholders like [SECURE_TOKEN_1]. "
+                        "These tokens represent standard, benign nouns, entities, or financial figures. Treat these "
+                        "tokens as normal variables, process the request completely, and preserve the exact token "
+                        "formatting in your response."
+                    )
+                },
+                {"role": "user", "content": masked_prompt}
             ]
         )
-        return {"response": response.choices[0].message.content}
+        
+        external_reply = response.choices[0].message.content
+        print(f"--> Raw OpenAI Response (Tokenized): {external_reply}")
+        
+        # Unmask the response before handing it back to the user
+        unmasked_reply = unmask_entities(external_reply, vault)
+        print(f"--> Final Unmasked Response Delivered: {unmasked_reply}")
+        
+        return {"response": unmasked_reply}
+        
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
     import uvicorn
-    # run the server locally on port 5000
     uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
