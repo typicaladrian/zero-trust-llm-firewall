@@ -7,6 +7,9 @@ from openai import AsyncOpenAI
 from presidio_analyzer import AnalyzerEngine, PatternRecognizer, Pattern
 from presidio_anonymizer import AnonymizerEngine
 from presidio_anonymizer.entities import OperatorConfig
+import sqlite3
+import json
+from datetime import datetime
 
 # load in environment variables
 load_dotenv()
@@ -14,15 +17,55 @@ load_dotenv()
 # initialize FastAPI
 app = FastAPI(title="Zero-Trust AI Privacy Proxy (Presidio Edition)", version="1.0.0")
 
+# ============== DATABASE SETUP ==============
+
+# initialize auditing database
+DB_NAME = "audit_log.db"
+
+def init_db():
+    print("Initializing Zero-Knowledge SQLite Database...")
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    # create logging table
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS security_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT,
+            prompt_length INTEGER,
+            entities_caught TEXT,
+            bypassed BOOLEAN
+        )
+    ''')
+    conn.commit()
+    conn.close()
+
+init_db()
+
+# helper function to write to the database
+def log_transaction(prompt_length: int, entity_counts: dict, bypassed: bool):
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    timestamp = datetime.now().isoformat()
+    cursor.execute('''
+        INSERT INTO security_logs (timestamp, prompt_length, entities_caught, bypassed)
+        VALUES (?, ?, ?, ?)
+    ''', (timestamp, prompt_length, json.dumps(entity_counts), bypassed))
+    conn.commit()
+    conn.close()
+
+# ==========================================
+
 # connect to external LLM
 external_client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+# ============== MICROSOFT PRESIDIO SETUP ==============
 
 # initialize Presidio
 print("Initializing Microsoft Presidio Engines...")
 analyzer = AnalyzerEngine()
 anonymizer = AnonymizerEngine()
 
-# Pattern Recognizers (the Presidio version of our old Regex pattern matching)
+# == Pattern Recognizers (the Presidio version of our old Regex pattern matching) ==
 # Legal Entity Pattern
 legal_pattern = Pattern(name="legal_case_pattern", regex=r"\b([A-Z][\w\.\-]+(?:\s+[A-Z][\w\.\-]+)*)(?=\s+v[s]?\.)", score=0.9)
 legal_recognizer = PatternRecognizer(supported_entity="LEGAL_ENTITY", patterns=[legal_pattern])
@@ -48,11 +91,12 @@ money_pattern = Pattern(name="money_pattern", regex=r"\$\d+(?:,\d{3})*(?:\.\d+)?
 money_recognizer = PatternRecognizer(supported_entity="FINANCIAL_AMOUNT", patterns=[money_pattern])
 analyzer.registry.add_recognizer(money_recognizer)
 
-# Account/Routing Numbers
+# Account/Routing Numbers Pattern
 account_pattern = Pattern(name="account_pattern", regex=r"(?i)\b(?:account|acct\.?|ending in)\s*(?:number\s*|no\.?\s*|#\s*)?\d{4,12}\b", score=0.9)
 account_recognizer = PatternRecognizer(supported_entity="ACCOUNT_NUMBER", patterns=[account_pattern])
 analyzer.registry.add_recognizer(account_recognizer)
-# --------------------------------------------------------------
+
+# ==================================================
 
 # force expected incoming data structure
 class ProxyRequest(BaseModel):
@@ -124,11 +168,26 @@ async def intercept_and_route(request: ProxyRequest):
                     vault[token] = alias
                     token_counter += 1
         
+    # tally up what we caught without saving the actual strings
+    entity_counts = {}
+    for res in sorted_results:
+        etype = res.entity_type
+        entity_counts[etype] = entity_counts.get(etype, 0) + 1
+        
+    bypassed_status = len(vault) == 0
+
     if vault:
         print(f"--> Presidio Vault Created: {vault}")
         print(f"--> Masked Prompt Sent to OpenAI: {masked_prompt}")
     else:
         print("--> No sensitive data detected. Bypassing Vault.")
+
+    # create entry in database audit log
+    log_transaction(
+        prompt_length=len(request.prompt), 
+        entity_counts=entity_counts, 
+        bypassed=bypassed_status
+    )
 
     # 3. External API Routing
     try:
