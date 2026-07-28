@@ -22,7 +22,7 @@ RUN pip install --no-cache-dir --upgrade pip && \
 COPY main.py .
 
 # Pre-download the GLiNER model into the Docker layer to speed up startup times
-RUN python -c "from gliner import GLiNER; GLiNER.from_pretrained('urchade/gliner_multi_pii-v1', load_onnx_model=True)"
+RUN python -c "from gliner import GLiNER; GLiNER.from_pretrained('sassoftware/glitext-pii-base', load_onnx_model=True)"
 
 # Expose the default FastAPI port
 EXPOSE 8000

@@ -1,5 +1,6 @@
 import time
 import json
+import asyncio
 from collections import defaultdict
 from typing import List, Dict, Any, Iterator
 
@@ -12,11 +13,13 @@ import litellm
 # 1. Global Configurations & Model Initialization
 # ---------------------------------------------------------
 
-# Define the targeted PII labels for the GLiNER model
+# Targeted PII labels with tight semantic boundaries
 PII_LABELS = [
     "Person", "Organization", "Social Security Number", 
     "Medical Condition", "Address", "Phone Number", 
-    "Email Address", "Credit Card Number", "Date of Birth"
+    "Email Address", "Credit Card Number", "Date of Birth",
+    "Medical Record Number", "Medication", "Bank Account Number",
+    "Tax Identification Number", "Driver's License Number", "Passport Number"
 ]
 
 # Initialize GLiNER globally with ONNX runtime for optimized CPU execution
@@ -32,8 +35,7 @@ app = FastAPI(title="Zero-Trust AI Proxy", version="1.0.0")
 
 def chunk_text(text: str, max_words: int = 400) -> List[str]:
     """
-    Splits text into chunks of roughly max_words.
-    Per requirements, splits by spaces to create the ~400 word chunks.
+    Splits text into chunks of roughly max_words by spaces (~400 words).
     """
     words = text.split(" ")
     chunks = []
@@ -47,11 +49,11 @@ def chunk_text(text: str, max_words: int = 400) -> List[str]:
 
 class EntityVault:
     def __init__(self):
-        # Maps raw entity text to its token (e.g., "John Smith" -> "[PERSON_1]")
+        # Maps raw entity text to token (e.g., "John Smith" -> "[PERSON_1]")
         self.entity_map: Dict[str, str] = {}
         # Maps token back to raw text for deanonymization
         self.reverse_map: Dict[str, str] = {}
-        # Keeps track of token increments (e.g., PERSON_1, PERSON_2)
+        # Keeps track of token increments per label
         self.counters = defaultdict(int)
 
     def anonymize_text(self, text: str) -> str:
@@ -77,12 +79,11 @@ class EntityVault:
         for chunk, entities in zip(chunks, batch_predictions):
             mutated_chunk = chunk
             
-            # Sort in reverse order by starting index to prevent shifting index boundaries!
+            # Sort in reverse order by starting index to prevent index shifting!
             sorted_entities = sorted(entities, key=lambda x: x['start'], reverse=True)
             
             for ent in sorted_entities:
                 ent_text = ent['text']
-                # Clean up the label for tokenization (e.g., "Medical Condition" -> "MEDICAL_CONDITION")
                 label_base = ent['label'].upper().replace(" ", "_")
                 
                 # Check for existing token chronologically, else create new
@@ -100,18 +101,16 @@ class EntityVault:
                 
             anonymized_chunks.append(mutated_chunk)
             
-        # Reconstruct the string
         return " ".join(anonymized_chunks)
 
     def deanonymize_text(self, text: str) -> str:
         """
         Takes the LLM's response containing tokens and swaps them back 
-        to the original entities.
+        to original entities.
         """
         if not text:
             return text
             
-        # Perform a reverse lookup replacement
         for token, original_value in self.reverse_map.items():
             text = text.replace(token, original_value)
             
@@ -124,28 +123,32 @@ class EntityVault:
 @app.post("/v1/chat/completions")
 async def chat_completions(request: Request):
     """
-    Intercepts the Open WebUI OpenAI-format payload, scrubs the data,
-    handles diagnostic routing, passes it to LiteLLM, and returns the deanonymized result.
+    Intercepts the Open WebUI OpenAI-format payload, scrubs PII asynchronously,
+    handles diagnostic routing, passes to LiteLLM, and returns deanonymized results.
     """
     payload = await request.json()
     model = payload.get("model", "gpt-4o")
     messages = payload.get("messages", [])
     
-    # Instantiate a fresh Vault strictly bound to this request (RAM only)
+    # Fresh Vault strictly bound to this request pass
     vault = EntityVault()
     start_time = time.time()
     
-    # 1. Scrub the outgoing payload
+    # 1. Scrub the outgoing payload asynchronously (Concurrency Guard)
     scrubbed_messages = []
     for msg in messages:
         scrubbed_msg = msg.copy()
         if "content" in scrubbed_msg and isinstance(scrubbed_msg["content"], str):
-            scrubbed_msg["content"] = vault.anonymize_text(scrubbed_msg["content"])
+            # Offload heavy CPU batch inference to worker thread so FastAPI remains non-blocking
+            scrubbed_msg["content"] = await asyncio.to_thread(
+                vault.anonymize_text, 
+                scrubbed_msg["content"]
+            )
         scrubbed_messages.append(scrubbed_msg)
         
     elapsed_ms = round((time.time() - start_time) * 1000, 2)
     
-    # Extract the last user message to show in the audit report
+    # Extract last user message for audit reporting
     last_user_msg = next((m["content"] for m in reversed(scrubbed_messages) if m["role"] == "user"), "")
 
     # 2. Feature: The Elm Tech Auditor (Diagnostic Bypass)
@@ -171,19 +174,15 @@ async def chat_completions(request: Request):
         })
 
     # 3. Model Routing & Upstream Request via LiteLLM
-    # Overriding stream payload per V1 constraints
     payload["stream"] = False 
     payload["messages"] = scrubbed_messages
 
-    # --- ADD THESE THREE LINES ---
     print("\n--- OUTGOING SCRUBBED PAYLOAD TO LITELLM ---")
-    import json
     print(json.dumps(payload["messages"], indent=2))
-    # -----------------------------
 
     try:
-        # LiteLLM handles the specific provider logic (API keys expected in environment variables)
-        llm_response = litellm.completion(**payload)
+        # Offload synchronous LiteLLM network execution to thread worker
+        llm_response = await asyncio.to_thread(litellm.completion, **payload)
         
         # 4. Deanonymize incoming response
         response_content = llm_response.choices[0].message.content
@@ -192,11 +191,20 @@ async def chat_completions(request: Request):
         # Inject restored text back into the response object
         llm_response.choices[0].message.content = restored_content
         
-        # Return cleanly as dict for Open WebUI
         return JSONResponse(content=llm_response.model_dump())
 
+    except litellm.exceptions.AuthenticationError as e:
+        return JSONResponse(
+            status_code=401,
+            content={"error": "Proxy Error: Upstream authentication failed. Check API keys in .env file.", "details": str(e)}
+        )
+    except litellm.exceptions.Timeout as e:
+        return JSONResponse(
+            status_code=504,
+            content={"error": "Proxy Error: The upstream cloud provider timed out.", "details": str(e)}
+        )
     except Exception as e:
         return JSONResponse(
             status_code=500,
-            content={"error": f"Upstream LiteLLM Error: {str(e)}"}
+            content={"error": f"Proxy Error: An unexpected LiteLLM error occurred.", "details": str(e)}
         )
