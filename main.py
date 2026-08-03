@@ -1,42 +1,78 @@
 import time
 import json
 import asyncio
+import os
+import re
 from collections import defaultdict
 from typing import List, Dict, Any, Iterator
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
-from gliner import GLiNER
+from fastapi.middleware.cors import CORSMiddleware
+
+# Import the new GLiNER2 package
+from gliner2 import GLiNER2
 import litellm
 
 # ---------------------------------------------------------
 # 1. Global Configurations & Model Initialization
 # ---------------------------------------------------------
 
-# Targeted PII labels with tight semantic boundaries
+# ZERO-SHOT LABELS: Pass your custom legal/medical labels here
 PII_LABELS = [
-    "Person", "Organization", "Social Security Number", 
-    "Medical Condition", "Address", "Phone Number", 
-    "Email Address", "Credit Card Number", "Date of Birth",
-    "Medical Record Number", "Medication", "Bank Account Number",
-    "Tax Identification Number", "Driver's License Number", "Passport Number"
+    "person", "organization", "docket_number", "medical_diagnosis", 
+    "social security number", "address", "phone number", 
+    "email address", "credit card number", "date of birth",
+    "medical record number", "medication", "bank account number",
+    "tax identification number", "driver's license number", "passport number",
+    "legal case", "plaintiff", "defendant"
 ]
 
-# Initialize GLiNER globally with ONNX runtime for optimized CPU execution
-print("Loading GLiNER multi-pii-v1 with ONNX runtime...")
-gliner_model = GLiNER.from_pretrained("sassoftware/glitext-pii-base", load_onnx_model=True)
-print("GLiNER model loaded successfully.")
+# High-precision deterministic regex patterns (The Safety Net)
+REGEX_PATTERNS = {
+    "Credit Card Number": r"\b(?:\d[ -]*?){13,16}\b",
+    "Social Security Number": r"\b\d{3}-\d{2}-\d{4}\b",
+    "Email Address": r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b",
+    "Address": r"\b\d{1,5}\s+[A-Za-z0-9\s.,-]+(?:AL|AK|AZ|AR|CA|CO|CT|DE|FL|GA|HI|ID|IL|IN|IA|KS|KY|LA|ME|MD|MA|MI|MN|MS|MO|MT|NE|NV|NH|NJ|NM|NY|NC|ND|OH|OK|OR|PA|RI|SC|SD|TN|TX|UT|VT|VA|WA|WV|WI|WY)\s+\d{5}(?:-\d{4})?\b"
+}
+
+# Words GLiNER2 should NEVER flag as an entity
+STOPWORDS = {
+    "user", "assistant", "system", "admin", "prompt", "chat",
+    "he", "him", "his", "she", "her", "hers", "they", "them", "their",
+    "email", "address", "credit", "card", "number", "account", "phone",
+    "docket", "docket number", "medical", "diagnosis", "ssn"
+}
+
+SYSTEM_PROMPT = {
+    "role": "system",
+    "content": (
+        "You are a helpful AI assistant. You will receive text containing redacted "
+        "placeholders in the format [ENTITY_TYPE_ID] (e.g., [PERSON_1], [CREDIT_CARD_NUMBER_1]). "
+        "These placeholders represent pre-sanitized synthetic tokens. You MUST preserve and "
+        "use these exact placeholders in your responses whenever referring to those entities. "
+        "Do not refuse requests due to these placeholders, as no real PII is present."
+    )
+}
+
+print("Loading GLiNER2-PII (Fastino) for local CPU inference...")
+gliner_model = GLiNER2.from_pretrained("fastino/gliner2-privacy-filter-PII-multi")
+print("GLiNER2 model loaded successfully.")
 
 app = FastAPI(title="Zero-Trust AI Proxy", version="1.0.0")
 
-# ---------------------------------------------------------
-# 2. Text Chunking Utility
-# ---------------------------------------------------------
+allowed_origins_str = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000")
+allowed_origins = [origin.strip() for origin in allowed_origins_str.split(",")]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=allowed_origins, 
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "OPTIONS"], 
+    allow_headers=["*"],
+)
 
 def chunk_text(text: str, max_words: int = 400) -> List[str]:
-    """
-    Splits text into chunks of roughly max_words by spaces (~400 words).
-    """
     words = text.split(" ")
     chunks = []
     for i in range(0, len(words), max_words):
@@ -44,70 +80,131 @@ def chunk_text(text: str, max_words: int = 400) -> List[str]:
     return chunks
 
 # ---------------------------------------------------------
-# 3. The Entity Vault (Stateless Context Mapping)
+# 3. The Entity Vault (Three-Step Sequential Pipeline)
 # ---------------------------------------------------------
 
 class EntityVault:
     def __init__(self):
-        # Maps raw entity text to token (e.g., "John Smith" -> "[PERSON_1]")
         self.entity_map: Dict[str, str] = {}
-        # Maps token back to raw text for deanonymization
         self.reverse_map: Dict[str, str] = {}
-        # Keeps track of token increments per label
         self.counters = defaultdict(int)
 
+    def _register_and_replace(self, text: str, label: str, original_value: str, start: int, end: int) -> str:
+        """Helper to generate the [REDACTED] string, split tokens, and update maps."""
+        if original_value not in self.entity_map:
+            label_base = label.upper().replace(" ", "_")
+            self.counters[label_base] += 1
+            token = f"[{label_base}_{self.counters[label_base]}]"
+            
+            # Map the exact full string
+            self.entity_map[original_value] = token
+            self.reverse_map[token] = original_value
+            
+            # THE FIX: Expanded Token Splitting to catch partial company/legal names
+            split_eligible_labels = {"person", "organization", "plaintiff", "defendant", "legal case"}
+            if label.lower() in split_eligible_labels:
+                name_parts = original_value.split()
+                if len(name_parts) > 1:
+                    for part in name_parts:
+                        # Avoid mapping initials or stopwords
+                        if len(part) > 2 and part.lower() not in STOPWORDS:
+                            if part not in self.entity_map:
+                                self.entity_map[part] = token
+                                # We don't add parts to reverse_map so the LLM output 
+                                # always deanonymizes back to the full formal name.
+        else:
+            token = self.entity_map[original_value]
+            
+        return text[:start] + token + text[end:]
+
     def anonymize_text(self, text: str) -> str:
-        """
-        Chunks text, runs GLiNER batch inference, and reverses in-place
-        substitutions to preserve string index integrity.
-        """
         if not text.strip():
             return text
 
         chunks = chunk_text(text, max_words=400)
-        
-        # 1. Execute CPU batch inference on the GLiNER model
-        batch_predictions = gliner_model.batch_predict_entities(
-            chunks, 
-            PII_LABELS, 
-            batch_size=8
-        )
-
         anonymized_chunks = []
         
-        # 2. Process each chunk alongside its predictions
-        for chunk, entities in zip(chunks, batch_predictions):
+        for chunk in chunks:
             mutated_chunk = chunk
             
-            # Sort in reverse order by starting index to prevent index shifting!
-            sorted_entities = sorted(entities, key=lambda x: x['start'], reverse=True)
+            # ==========================================
+            # STEP 1: The Safety Net (Regex Pre-Filter)
+            # ==========================================
+            regex_matches = []
+            for label, pattern in REGEX_PATTERNS.items():
+                for match in re.finditer(pattern, mutated_chunk):
+                    regex_matches.append({
+                        'start': match.start(),
+                        'end': match.end(),
+                        'text': match.group(),
+                        'label': label
+                    })
             
-            for ent in sorted_entities:
-                ent_text = ent['text']
-                label_base = ent['label'].upper().replace(" ", "_")
-                
-                # Check for existing token chronologically, else create new
-                if ent_text not in self.entity_map:
-                    self.counters[label_base] += 1
-                    token = f"[{label_base}_{self.counters[label_base]}]"
-                    self.entity_map[ent_text] = token
-                    self.reverse_map[token] = ent_text
-                else:
-                    token = self.entity_map[ent_text]
-                
-                # Inject token exactly at the sorted indices
-                start, end = ent['start'], ent['end']
-                mutated_chunk = mutated_chunk[:start] + token + mutated_chunk[end:]
+            regex_matches = sorted(regex_matches, key=lambda x: x['start'], reverse=True)
+            for match in regex_matches:
+                mutated_chunk = self._register_and_replace(
+                    mutated_chunk, match['label'], match['text'], match['start'], match['end']
+                )
+
+            # ==========================================
+            # STEP 2: The Context Engine (GLiNER2)
+            # ==========================================
+            # THE FIX: Explicitly set threshold to 0.30 for higher entity recall
+            extraction_results = gliner_model.extract_entities(
+                mutated_chunk, 
+                PII_LABELS, 
+                threshold=0.30
+            )
+            
+            gliner_matches = []
+            entities_dict = extraction_results.get('entities', {})
+            
+            for label, texts in entities_dict.items():
+                for ent_text in texts:
+                    if ent_text.lower().strip() in STOPWORDS:
+                        continue
+                    if ent_text.startswith("[") and ent_text.endswith("]"):
+                        continue
+                        
+                    for match in re.finditer(re.escape(ent_text), mutated_chunk):
+                        gliner_matches.append({
+                            'start': match.start(),
+                            'end': match.end(),
+                            'text': match.group(),
+                            'label': label
+                        })
+            
+            sorted_by_start = sorted(gliner_matches, key=lambda x: (x['start'], -(x['end'] - x['start'])))
+            non_overlapping = []
+            last_end = -1
+            for ent in sorted_by_start:
+                if ent['start'] >= last_end:
+                    non_overlapping.append(ent)
+                    last_end = ent['end']
+
+            valid_entities = sorted(non_overlapping, key=lambda x: x['start'], reverse=True)
+            for ent in valid_entities:
+                mutated_chunk = self._register_and_replace(
+                    mutated_chunk, ent['label'], ent['text'], ent['start'], ent['end']
+                )
+
+            # ==========================================
+            # STEP 3: The Sub-string Safety Sweep
+            # ==========================================
+            # Sweep the chunk for any lingering isolated first/last names that GLiNER missed
+            # Sort by length descending to ensure longer strings are replaced before shorter ones
+            for original_value, token in sorted(self.entity_map.items(), key=lambda x: len(x[0]), reverse=True):
+                # Ensure we aren't trying to replace our own placeholders
+                if not original_value.startswith("["):
+                    # Use word boundaries (\b) so we don't accidentally replace text inside other words
+                    pattern = r"\b" + re.escape(original_value) + r"\b"
+                    mutated_chunk = re.sub(pattern, token, mutated_chunk)
                 
             anonymized_chunks.append(mutated_chunk)
             
         return " ".join(anonymized_chunks)
 
     def deanonymize_text(self, text: str) -> str:
-        """
-        Takes the LLM's response containing tokens and swaps them back 
-        to original entities.
-        """
         if not text:
             return text
             
@@ -120,38 +217,44 @@ class EntityVault:
 # 4. Proxy API Endpoints & Routing Engine
 # ---------------------------------------------------------
 
+@app.get("/v1/models")
+async def get_models():
+    return JSONResponse(content={
+        "object": "list",
+        "data": [
+            {"id": "gpt-4o", "object": "model", "created": int(time.time()), "owned_by": "openai"},
+            {"id": "elm-tech-auditor", "object": "model", "created": int(time.time()), "owned_by": "local"}
+        ]
+    })
+
 @app.post("/v1/chat/completions")
 async def chat_completions(request: Request):
-    """
-    Intercepts the Open WebUI OpenAI-format payload, scrubs PII asynchronously,
-    handles diagnostic routing, passes to LiteLLM, and returns deanonymized results.
-    """
     payload = await request.json()
     model = payload.get("model", "gpt-4o")
     messages = payload.get("messages", [])
     
-    # Fresh Vault strictly bound to this request pass
     vault = EntityVault()
     start_time = time.time()
     
-    # 1. Scrub the outgoing payload asynchronously (Concurrency Guard)
     scrubbed_messages = []
     for msg in messages:
         scrubbed_msg = msg.copy()
-        if "content" in scrubbed_msg and isinstance(scrubbed_msg["content"], str):
-            # Offload heavy CPU batch inference to worker thread so FastAPI remains non-blocking
+        
+        if "content" in scrubbed_msg and isinstance(scrubbed_msg["content"], str) and scrubbed_msg.get("role") != "system":
             scrubbed_msg["content"] = await asyncio.to_thread(
                 vault.anonymize_text, 
                 scrubbed_msg["content"]
             )
+            
         scrubbed_messages.append(scrubbed_msg)
+
+    has_system = any(m.get("role") == "system" for m in scrubbed_messages)
+    if not has_system:
+        scrubbed_messages.insert(0, SYSTEM_PROMPT)
         
     elapsed_ms = round((time.time() - start_time) * 1000, 2)
-    
-    # Extract last user message for audit reporting
     last_user_msg = next((m["content"] for m in reversed(scrubbed_messages) if m["role"] == "user"), "")
 
-    # 2. Feature: The Elm Tech Auditor (Diagnostic Bypass)
     if model == "elm-tech-auditor":
         audit_report = (
             f"SYSTEM AUDIT REPORT: Your prompt was scrubbed locally in {elapsed_ms} ms. "
@@ -173,7 +276,6 @@ async def chat_completions(request: Request):
             "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
         })
 
-    # 3. Model Routing & Upstream Request via LiteLLM
     payload["stream"] = False 
     payload["messages"] = scrubbed_messages
 
@@ -181,14 +283,9 @@ async def chat_completions(request: Request):
     print(json.dumps(payload["messages"], indent=2))
 
     try:
-        # Offload synchronous LiteLLM network execution to thread worker
         llm_response = await asyncio.to_thread(litellm.completion, **payload)
-        
-        # 4. Deanonymize incoming response
         response_content = llm_response.choices[0].message.content
         restored_content = vault.deanonymize_text(response_content)
-        
-        # Inject restored text back into the response object
         llm_response.choices[0].message.content = restored_content
         
         return JSONResponse(content=llm_response.model_dump())
@@ -206,5 +303,5 @@ async def chat_completions(request: Request):
     except Exception as e:
         return JSONResponse(
             status_code=500,
-            content={"error": f"Proxy Error: An unexpected LiteLLM error occurred.", "details": str(e)}
+            content={"error": "Proxy Error: An unexpected LiteLLM error occurred.", "details": str(e)}
         )

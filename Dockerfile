@@ -21,8 +21,8 @@ RUN pip install --no-cache-dir --upgrade pip && \
 # Copy the proxy application code
 COPY main.py .
 
-# Pre-download the GLiNER model into the Docker layer to speed up startup times
-RUN python -c "from gliner import GLiNER; GLiNER.from_pretrained('sassoftware/glitext-pii-base', load_onnx_model=True)"
+# Pre-download the GLiNER2 model into the Docker layer to speed up startup times
+RUN python -c "from gliner2 import GLiNER2; GLiNER2.from_pretrained('fastino/gliner2-privacy-filter-PII-multi')"
 
 # Expose the default FastAPI port
 EXPOSE 8000

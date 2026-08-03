@@ -1,6 +1,5 @@
 fastapi>=0.109.0
 uvicorn>=0.27.0
 litellm>=1.20.0
-gliner[tokenizers]>=0.1.7
-onnxruntime>=1.17.0
+gliner2[local]
 pydantic>=2.5.0
