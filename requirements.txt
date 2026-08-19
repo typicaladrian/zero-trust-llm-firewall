@@ -3,3 +3,4 @@ uvicorn>=0.27.0
 litellm>=1.20.0
 gliner2[local]
 pydantic>=2.5.0
+PyJWT>=2.8.0

@@ -3,6 +3,7 @@ import json
 import asyncio
 import os
 import re
+import jwt
 from collections import defaultdict
 from typing import List, Dict, Any, Iterator
 
@@ -10,9 +11,12 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 
+from datetime import datetime
+
 # Import the new GLiNER2 package
 from gliner2 import GLiNER2
 import litellm
+
 
 # ---------------------------------------------------------
 # 1. Global Configurations & Model Initialization
@@ -41,7 +45,9 @@ STOPWORDS = {
     "user", "assistant", "system", "admin", "prompt", "chat",
     "he", "him", "his", "she", "her", "hers", "they", "them", "their",
     "email", "address", "credit", "card", "number", "account", "phone",
-    "docket", "docket number", "medical", "diagnosis", "ssn"
+    "docket", "docket number", "medical", "diagnosis", "ssn",
+    # Added common conjunctions and corporate suffixes to prevent aggressive token splitting
+    "and", "the", "for", "with", "from", "inc", "llc", "corp", "ltd", "company", "spa"
 }
 
 SYSTEM_PROMPT = {
@@ -254,6 +260,51 @@ async def chat_completions(request: Request):
         
     elapsed_ms = round((time.time() - start_time) * 1000, 2)
     last_user_msg = next((m["content"] for m in reversed(scrubbed_messages) if m["role"] == "user"), "")
+
+    # ==========================================
+    # SECURE IMMUTABLE METADATA AUDIT LOG
+    # ==========================================
+    if not last_user_msg.startswith("### Task:"):
+        
+        timestamp_24h = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        # Extract the user identity passed directly by Open WebUI
+        exact_user = (
+            request.headers.get("x-openwebui-user-email") or
+            request.headers.get("x-openwebui-user-name") or
+            request.headers.get("x-openwebui-user-id")
+        )
+
+        # Optional cryptographic JWT check if token is present
+        jwt_token = request.headers.get("x-openwebui-user-jwt")
+        if jwt_token:
+            try:
+                secret_key = os.getenv("WEBUI_SECRET_KEY", "zero_trust_edge_node_secret_key_2026")
+                decoded_payload = jwt.decode(jwt_token, secret_key, algorithms=["HS256"])
+                exact_user = decoded_payload.get("email") or decoded_payload.get("sub") or exact_user
+            except jwt.ExpiredSignatureError:
+                exact_user = "ERROR_EXPIRED_TOKEN"
+            except jwt.InvalidTokenError:
+                exact_user = "ERROR_INVALID_SIGNATURE"
+
+        # Fallback if no user headers are detected
+        if not exact_user:
+            exact_user = payload.get("user", "system_or_anonymous")
+
+        audit_entry = {
+            "timestamp": timestamp_24h,
+            "user": exact_user,
+            "model": model,
+            "tokens_anonymized": len(vault.entity_map),
+            "latency_ms": elapsed_ms
+        }
+
+        def write_audit_log():
+            os.makedirs("/app/logs", exist_ok=True)
+            with open("/app/logs/audit_log.jsonl", "a") as f:
+                f.write(json.dumps(audit_entry) + "\n")
+
+        await asyncio.to_thread(write_audit_log)
 
     if model == "elm-tech-auditor":
         audit_report = (
