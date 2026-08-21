@@ -17,6 +17,8 @@ from datetime import datetime
 from gliner2 import GLiNER2
 import litellm
 
+import hashlib
+from pydantic import BaseModel
 
 # ---------------------------------------------------------
 # 1. Global Configurations & Model Initialization
@@ -42,12 +44,24 @@ REGEX_PATTERNS = {
 
 # Words GLiNER2 should NEVER flag as an entity
 STOPWORDS = {
+    # System & Pipeline standard words
     "user", "assistant", "system", "admin", "prompt", "chat",
+    
+    # Pronouns & Grammatical Noise
     "he", "him", "his", "she", "her", "hers", "they", "them", "their",
+    "that", "this", "these", "those", "which", "who", "whom", "where",
+    
+    # Specific PII Context Anchors
     "email", "address", "credit", "card", "number", "account", "phone",
     "docket", "docket number", "medical", "diagnosis", "ssn",
-    # Added common conjunctions and corporate suffixes to prevent aggressive token splitting
-    "and", "the", "for", "with", "from", "inc", "llc", "corp", "ltd", "company", "spa"
+    
+    # Conjunctions, Prepositions, and Corporate Suffixes
+    "and", "the", "for", "with", "from", "inc", "llc", "corp", "ltd", "company", "spa",
+    
+    # Legal Document Anatomy & Roles
+    "agreement", "contract", "amendment", "exhibit", "article", "section", 
+    "clause", "paragraph", "schedule", "document", "provision",
+    "plaintiff", "defendant", "client", "party", "parties", "purchaser", "seller", "vendor"
 }
 
 SYSTEM_PROMPT = {
@@ -85,8 +99,47 @@ def chunk_text(text: str, max_words: int = 400) -> List[str]:
         chunks.append(" ".join(words[i:i + max_words]))
     return chunks
 
+# Global in-memory vault and disk path
+CLIENT_HASH_VAULT = set()
+VAULT_FILE = "/app/logs/client_hashes.json"
+
+def generate_secure_hash(text: str) -> str:
+    # Normalizes text (lowercases, strips punctuation) to ensure reliable hashing
+    normalized = re.sub(r'[^a-z0-9]', '', text.lower())
+    return hashlib.sha256(normalized.encode('utf-8')).hexdigest()
+
+@app.on_event("startup")
+async def load_client_vault():
+    if os.path.exists(VAULT_FILE):
+        with open(VAULT_FILE, "r") as f:
+            hashes = json.load(f)
+            CLIENT_HASH_VAULT.update(hashes)
+        print(f"Loaded {len(CLIENT_HASH_VAULT)} client hashes into ephemeral RAM.")
+
+# -------------------------------------------------
+# Cryptographic Client List Vault
+# -------------------------------------------------
+class ClientList(BaseModel):
+    names: List[str]
+
+@app.post("/v1/vault/sync")
+async def sync_client_vault(payload: ClientList):
+    # Shred the incoming plaintext immediately into irreversible hashes
+    new_hashes = {generate_secure_hash(name) for name in payload.names}
+    CLIENT_HASH_VAULT.update(new_hashes)
+    
+    # Save ONLY the hashes to the physical disk
+    with open(VAULT_FILE, "w") as f:
+        json.dump(list(CLIENT_HASH_VAULT), f)
+        
+    return {
+        "status": "success", 
+        "message": "Clients cryptographically shredded and stored.",
+        "total_active_hashes": len(CLIENT_HASH_VAULT)
+    }
+
 # ---------------------------------------------------------
-# 3. The Entity Vault (Three-Step Sequential Pipeline)
+# 2. The Entity Vault (Three-Step Sequential Pipeline)
 # ---------------------------------------------------------
 
 class EntityVault:
@@ -132,9 +185,9 @@ class EntityVault:
         
         for chunk in chunks:
             mutated_chunk = chunk
-            
+
             # ==========================================
-            # STEP 1: The Safety Net (Regex Pre-Filter)
+            # STEP 0: The Safety Net (Regex Pre-Filter)
             # ==========================================
             regex_matches = []
             for label, pattern in REGEX_PATTERNS.items():
@@ -152,6 +205,49 @@ class EntityVault:
                     mutated_chunk, match['label'], match['text'], match['start'], match['end']
                 )
 
+            # ==========================================
+            # STEP 1: The Cryptographic Client Vault
+            # ==========================================
+            if CLIENT_HASH_VAULT:
+                words = mutated_chunk.split()
+                max_words = min(5, len(words))
+                
+                matched_phrases = []
+                for n in range(max_words, 0, -1):
+                    for i in range(len(words) - n + 1):
+                        phrase = " ".join(words[i:i+n])
+                        if generate_secure_hash(phrase) in CLIENT_HASH_VAULT:
+                            matched_phrases.append(phrase)
+                            
+                matched_phrases = sorted(list(set(matched_phrases)), key=len, reverse=True)
+                
+                # 1. Collect all match locations across all phrases
+                vault_matches = []
+                for phrase in matched_phrases:
+                    pattern = r"\b" + re.escape(phrase) + r"\b"
+                    for match in re.finditer(pattern, mutated_chunk, re.IGNORECASE):
+                        vault_matches.append({
+                            'start': match.start(),
+                            'end': match.end(),
+                            'text': match.group()
+                        })
+
+                # 2. De-duplicate overlaps and sort in REVERSE order
+                sorted_vault_matches = sorted(vault_matches, key=lambda x: (x['start'], -(x['end'] - x['start'])))
+                non_overlapping_vault = []
+                last_end = -1
+                for vm in sorted_vault_matches:
+                    if vm['start'] >= last_end:
+                        non_overlapping_vault.append(vm)
+                        last_end = vm['end']
+
+                # 3. Replace from end to start to prevent offset drift
+                for vm in sorted(non_overlapping_vault, key=lambda x: x['start'], reverse=True):
+                    mutated_chunk = self._register_and_replace(
+                        mutated_chunk, "PROTECTED_CLIENT", vm['text'], vm['start'], vm['end']
+                    )
+
+            
             # ==========================================
             # STEP 2: The Context Engine (GLiNER2)
             # ==========================================
@@ -220,7 +316,7 @@ class EntityVault:
         return text
 
 # ---------------------------------------------------------
-# 4. Proxy API Endpoints & Routing Engine
+# 3. Proxy API Endpoints & Routing Engine
 # ---------------------------------------------------------
 
 @app.get("/v1/models")
