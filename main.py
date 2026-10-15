@@ -20,6 +20,7 @@ import litellm
 import hashlib
 from pydantic import BaseModel
 
+from fastapi.responses import StreamingResponse
 # ---------------------------------------------------------
 # 1. Global Configurations & Model Initialization
 # ---------------------------------------------------------
@@ -461,37 +462,55 @@ async def get_models():
                 "object": "model",
                 "created": int(time.time()),
                 "owned_by": "local"
-            }
+            },
+            {
+                "id": "public-research-base", 
+                "object": "model", 
+                "created": int(time.time()), 
+                "owned_by": "elm-tech"}
         ]
     })
 
 @app.post("/v1/chat/completions")
 async def chat_completions(request: Request):
     payload = await request.json()
-    model = payload.get("model", "gpt-4o-mini") 
+    model = payload.get("model", "gpt-4o-mini")
+    print(f"--> INCOMING REQUEST MODEL ID: '{model}'")  
     messages = payload.get("messages", [])
     
     # 1. NEW METRIC: Payload Volume (Calculate before scrubbing)
     payload_char_count = sum(len(m.get("content", "")) for m in messages if isinstance(m.get("content"), str))
 
+    # --- NEW: Check for bypass and map to upstream LLM ---
+    is_unredacted = (model == "public-research-base")
+    if is_unredacted:
+        payload["model"] = "gpt-4o-mini"
+
     vault = EntityVault()
     start_time = time.time()
     
     scrubbed_messages = []
-    for msg in messages:
-        scrubbed_msg = msg.copy()
-        
-        if "content" in scrubbed_msg and isinstance(scrubbed_msg["content"], str) and scrubbed_msg.get("role") != "system":
-            scrubbed_msg["content"] = await asyncio.to_thread(
-                vault.anonymize_text, 
-                scrubbed_msg["content"]
-            )
+    if is_unredacted:
+        # Bypass redaction completely
+        scrubbed_messages = messages
+    else:
+        # Standard Zero-Trust Scrubbing Pipeline
+        for msg in messages:
+            scrubbed_msg = msg.copy()
             
-        scrubbed_messages.append(scrubbed_msg)
+            if "content" in scrubbed_msg and isinstance(scrubbed_msg["content"], str) and scrubbed_msg.get("role") != "system":
+                scrubbed_msg["content"] = await asyncio.to_thread(
+                    vault.anonymize_text, 
+                    scrubbed_msg["content"]
+                )
+                
+            scrubbed_messages.append(scrubbed_msg)
 
-    has_system = any(m.get("role") == "system" for m in scrubbed_messages)
-    if not has_system:
-        scrubbed_messages.insert(0, SYSTEM_PROMPT)
+    # Skip adding the system PII prompt if unredacted
+    if not is_unredacted:
+        has_system = any(m.get("role") == "system" for m in scrubbed_messages)
+        if not has_system:
+            scrubbed_messages.insert(0, SYSTEM_PROMPT)
         
     elapsed_ms = round((time.time() - start_time) * 1000, 2)
     last_user_msg = next((m["content"] for m in reversed(scrubbed_messages) if m["role"] == "user"), "")
@@ -575,26 +594,62 @@ async def chat_completions(request: Request):
             "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
         })
 
-    payload["stream"] = False 
     payload["messages"] = scrubbed_messages
 
     print("\n--- OUTGOING SCRUBBED PAYLOAD TO LITELLM ---")
     print(json.dumps(payload["messages"], indent=2))
 
     try:
-        llm_response = await asyncio.to_thread(litellm.completion, **payload)
+        # 1. Determine if the frontend originally requested a stream
+        requested_stream = payload.get("stream", False)
         
-        # 3. NEW METRIC: API Token Usage
-        if hasattr(llm_response, "usage") and llm_response.usage:
-            audit_entry["upstream_tokens"] = llm_response.usage.total_tokens
+        # 2. Force synchronous mode ONLY for the Zero-Trust redacted pipeline
+        if not is_unredacted:
+            payload["stream"] = False
+            requested_stream = False
+
+        if requested_stream:
+            # --- THE UNREDACTED STREAMING ROUTE ---
+            async def event_stream():
+                try:
+                    response = await litellm.acompletion(**payload)
+                    async for chunk in response:
+                        # MUST use exclude_unset=True to prevent injecting 'null' fields
+                        # which crashes the Open WebUI frontend Javascript parser.
+                        if hasattr(chunk, "model_dump_json"):
+                            json_str = chunk.model_dump_json(exclude_unset=True)
+                        elif hasattr(chunk, "json"):
+                            json_str = chunk.json(exclude_unset=True)
+                        else:
+                            json_str = json.dumps(chunk)
+                            
+                        yield f"data: {json_str}\n\n"
+                    yield "data: [DONE]\n\n"
+                except Exception as e:
+                    print(f"PROXY STREAM EXCEPTION: {e}")
+                    yield f"data: {json.dumps({'error': str(e)})}\n\n"
             
-        await asyncio.to_thread(write_audit_log) # Log after successful cloud call
-        
-        response_content = llm_response.choices[0].message.content
-        restored_content = vault.deanonymize_text(response_content)
-        llm_response.choices[0].message.content = restored_content
-        
-        return JSONResponse(content=llm_response.model_dump())
+            # Log the transaction (Note: Upstream token counting is bypassed for streams in this MVP)
+            await asyncio.to_thread(write_audit_log)
+            return StreamingResponse(event_stream(), media_type="text/event-stream")
+            
+        else:
+            # --- THE ZERO-TRUST SYNCHRONOUS ROUTE ---
+            llm_response = await asyncio.to_thread(litellm.completion, **payload)
+
+            if hasattr(llm_response, "usage") and llm_response.usage:
+                audit_entry["upstream_tokens"] = llm_response.usage.total_tokens
+                
+            await asyncio.to_thread(write_audit_log)
+            
+            response_content = llm_response.choices[0].message.content
+            
+            if not is_unredacted:
+                response_content = vault.deanonymize_text(response_content)
+                
+            llm_response.choices[0].message.content = response_content
+            
+            return JSONResponse(content=llm_response.model_dump())
 
     except litellm.exceptions.AuthenticationError as e:
         return JSONResponse(status_code=401, content={"error": "Proxy Error: Upstream auth failed.", "details": str(e)})
