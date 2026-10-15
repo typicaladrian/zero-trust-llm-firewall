@@ -3,3 +3,6 @@ venv/
 __pycache__/
 audit_log.db
 depreciated
+# Generated redaction outputs (re-created by the benchmark and load-test scripts)
+test_textfiles/*_redacted.txt
+redacted_audit_report.txt
