@@ -11,7 +11,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 
-from datetime import datetime
+from datetime import datetime, timedelta
 
 # Import the new GLiNER2 package
 from gliner2 import GLiNER2
@@ -20,7 +20,24 @@ import litellm
 import hashlib
 from pydantic import BaseModel
 
+import resend
+
+from io import BytesIO
 from fastapi.responses import StreamingResponse
+from reportlab.lib.pagesizes import letter
+from reportlab.lib import colors
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image
+from reportlab.graphics.shapes import Drawing, String
+from reportlab.graphics.charts.barcharts import HorizontalBarChart
+from reportlab.graphics.charts.textlabels import Label
+from reportlab.lib.validators import Auto
+
+
+import glob
+import gzip
+import shutil
+
 # ---------------------------------------------------------
 # 1. Global Configurations & Model Initialization
 # ---------------------------------------------------------
@@ -171,8 +188,127 @@ def generate_secure_hash(text: str) -> str:
     normalized = re.sub(r'[^a-z0-9]', '', text.lower())
     return hashlib.sha256(normalized.encode('utf-8')).hexdigest()
 
+async def log_lifecycle_manager():
+    """Runs continuously in the background to compress old logs and prune >90 days."""
+    while True:
+        try:
+            log_dir = "/app/logs"
+            os.makedirs(log_dir, exist_ok=True)
+            current_month = datetime.now().strftime("%Y_%m")
+            
+            # 1. Compress previous months' active JSONL files
+            for filepath in glob.glob(f"{log_dir}/audit_*.jsonl"):
+                filename = os.path.basename(filepath)
+                # If the file doesn't match the current month, it's old. Zip it!
+                if current_month not in filename: 
+                    with open(filepath, 'rb') as f_in:
+                        with gzip.open(f"{filepath}.gz", 'wb') as f_out:
+                            shutil.copyfileobj(f_in, f_out)
+                    os.remove(filepath) # Delete the uncompressed legacy file
+                    
+            # 2. Prune archives older than 90 days
+            cutoff_time = time.time() - (90 * 86400) # 90 days in seconds
+            for filepath in glob.glob(f"{log_dir}/audit_*.gz"):
+                if os.path.getmtime(filepath) < cutoff_time:
+                    os.remove(filepath)
+                    
+        except Exception as e:
+            print(f"Log manager encountered an error: {e}")
+            
+        await asyncio.sleep(86400) # Go to sleep for 24 hours
+
+async def send_monthly_audit_email(pdf_buffer: BytesIO, target_month: str):
+    """Fires the PDF over HTTPS port 443 via the Resend API."""
+    resend.api_key = os.environ.get("EMAIL_API_KEY")
+    client_name = os.environ.get("CLIENT_ORG_NAME", "Enterprise Client")
+    appliance_id = os.environ.get("APPLIANCE_ID", "ELM-NUC-UNKNOWN")
+    operator_email = os.environ.get("OPERATOR_EMAIL")
+    
+    if not resend.api_key or not operator_email:
+        print("CRITICAL ERROR: Missing Resend API Key or Operator Email. Cannot send report.")
+        return
+
+    try:
+        # Resend Python SDK requires the attachment content as a list of integers (bytes)
+        pdf_bytes = list(pdf_buffer.getvalue())
+        
+        params = {
+            "from": os.environ.get("EMAIL_SENDER", "adrian@elmtechsecurity.com"),
+            "to": [operator_email],
+            "subject": f"[{appliance_id}] Monthly Security Audit - {client_name}",
+            "html": f"""
+                <h2>Monthly Edge Gateway Audit</h2>
+                <p><b>Client:</b> {client_name}</p>
+                <p><b>Appliance ID:</b> {appliance_id}</p>
+                <p><b>Audit Period:</b> {target_month}</p>
+                <p>Attached is the automated zero-trust security audit and cost mitigation report for the previous month.</p>
+                <br/>
+                <p><i>- Elm Tech Solutions HaaS Automated Delivery</i></p>
+            """,
+            "attachments": [
+                {
+                    "filename": f"elm_tech_audit_{target_month}.pdf",
+                    "content": pdf_bytes
+                }
+            ]
+        }
+        
+        # Execute the HTTPS delivery in a background thread to prevent blocking the async loop
+        response = await asyncio.to_thread(resend.Emails.send, params)
+        print(f"Successfully dispatched {target_month} audit to operator. Resend ID: {response.get('id')}")
+        
+    except Exception as e:
+        print(f"Failed to send email via Resend: {str(e)}")
+
+async def automated_report_scheduler():
+    """Wakes up on the 1st of the month at midnight EST, generates the PDF, and emails it."""
+    while True:
+        now = datetime.now()
+        
+        # Calculate exactly when the next 1st of the month at 00:00:00 occurs
+        if now.month == 12:
+            next_run = now.replace(year=now.year + 1, month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
+        else:
+            next_run = now.replace(month=now.month + 1, day=1, hour=0, minute=0, second=0, microsecond=0)
+            
+        sleep_seconds = (next_run - now).total_seconds()
+        print(f"Report Scheduler armed. Sleeping for {sleep_seconds} seconds until {next_run.strftime('%Y-%m-%d %H:%M:%S')} EST.")
+        
+        await asyncio.sleep(sleep_seconds)
+        
+        # It is now exactly midnight on the 1st.
+        print("Midnight reached. Initiating automated reporting sequence...")
+        
+        try:
+            # We need the report for the month that *just* finished
+            last_month_date = datetime.now() - timedelta(days=1)
+            target_month = last_month_date.strftime("%Y_%m")
+            
+            # 1. Fetch the raw JSON metrics
+            report_response = await generate_audit_report(target_month)
+            if report_response.status_code == 200:
+                report_data = json.loads(report_response.body.decode('utf-8'))
+                
+                # 2. Render the PDF in volatile memory
+                pdf_buffer = render_executive_pdf(report_data)
+                
+                # 3. Fire it off to you (the operator)
+                await send_monthly_audit_email(pdf_buffer, target_month)
+            else:
+                print(f"Report generation failed for {target_month}. Status: {report_response.status_code}")
+                
+        except Exception as e:
+            print(f"Fatal error in automated scheduler: {e}")
+
 @app.on_event("startup")
-async def load_client_vault():
+async def startup_routines():
+    # Trigger the background lifecycle manager when Uvicorn boots
+    asyncio.create_task(log_lifecycle_manager())
+    
+    # Trigger the monthly PDF automated delivery scheduler
+    asyncio.create_task(automated_report_scheduler()) # <-- ADD THIS LINE
+    
+    # Existing vault load logic
     if os.path.exists(VAULT_FILE):
         with open(VAULT_FILE, "r") as f:
             hashes = json.load(f)
@@ -556,7 +692,6 @@ async def chat_completions(request: Request):
     }
 
     def write_audit_log():
-        # Specifically filter out Open WebUI's invisible background noise
         ignore_phrases = [
             "Generate a concise, 3-5 word title",
             "Suggest 3-5 relevant follow-up questions",
@@ -568,11 +703,14 @@ async def chat_completions(request: Request):
         
         if not is_background_task:
             os.makedirs("/app/logs", exist_ok=True)
-            with open("/app/logs/audit_log.jsonl", "a") as f:
+            current_month = datetime.now().strftime("%Y_%m")
+            log_path = f"/app/logs/audit_{current_month}.jsonl" 
+            
+            with open(log_path, "a") as f:
                 f.write(json.dumps(audit_entry) + "\n")
 
     if model == "elm-tech-auditor":
-        await asyncio.to_thread(write_audit_log) # Log immediately for the auditor
+        await asyncio.to_thread(write_audit_log) 
         
         audit_report = (
             f"SYSTEM AUDIT REPORT: Your prompt was scrubbed locally in {elapsed_ms} ms. "
@@ -659,11 +797,14 @@ async def chat_completions(request: Request):
         return JSONResponse(status_code=500, content={"error": "Proxy Error: Unexpected LiteLLM error.", "details": str(e)})
 
 @app.get("/v1/audit/report")
-async def generate_audit_report():
-    log_path = "/app/logs/audit_log.jsonl"
+async def generate_audit_report(month: str = None):
+    if not month:
+        month = datetime.now().strftime("%Y_%m")
+        
+    log_path = f"/app/logs/audit_{month}.jsonl"
     
     if not os.path.exists(log_path):
-        return JSONResponse(status_code=404, content={"error": "No audit logs found. The system has not processed any traffic yet."})
+        return JSONResponse(status_code=404, content={"error": f"No audit logs found for {month}."})
         
     total_prompts = 0
     total_threats = 0
@@ -672,9 +813,21 @@ async def generate_audit_report():
     total_payload_volume = 0
     model_usage = defaultdict(int)
     aggregated_threats = defaultdict(int)
-    
-    # NEW: Create a list to hold the line-by-line history
     transaction_ledger = []
+    
+    # 💰 NEW: ROI Trackers
+    unique_users = set()
+    total_actual_cost = 0.0
+    total_unoptimized_cost = 0.0
+    
+    # Estimated blended cost per token (Input/Output average)
+    PRICING = {
+        "gpt-4o-mini": 0.0000004,               # ~$0.40 per 1M
+        "claude-haiku-4-5-20251001": 0.0000007, # ~$0.70 per 1M
+        "claude-opus-5": 0.000045,              # ~$45.00 per 1M
+        "elm-tech-auditor": 0.0
+    }
+    FLAGSHIP_RATE = PRICING["claude-opus-5"]
     
     try:
         with open(log_path, "r") as f:
@@ -686,35 +839,42 @@ async def generate_audit_report():
                 total_prompts += 1
                 total_threats += entry.get("tokens_anonymized", 0)
                 total_latency += entry.get("latency_ms", 0)
-                total_upstream_tokens += entry.get("upstream_tokens", 0)
+                
+                tokens = entry.get("upstream_tokens", 0)
+                total_upstream_tokens += tokens
                 total_payload_volume += entry.get("payload_char_count", 0)
                 
-                # Track model popularity
-                model_usage[entry.get("model", "unknown")] += 1
+                model = entry.get("model", "unknown")
+                user = entry.get("user", "unknown")
                 
-                # Aggregate granular threat types
+                model_usage[model] += 1
+                unique_users.add(user)
+                
+                # 💰 NEW: Calculate Financials
+                total_actual_cost += (tokens * PRICING.get(model, PRICING["gpt-4o-mini"]))
+                total_unoptimized_cost += (tokens * FLAGSHIP_RATE)
+                
                 breakdown = entry.get("entity_breakdown", {})
                 for entity_type, count in breakdown.items():
                     aggregated_threats[entity_type] += count
                 
-                # NEW: Clean up the entry and append it to our ledger
                 transaction_ledger.append({
                     "timestamp": entry.get("timestamp"),
-                    "user": entry.get("user"),
-                    "model": entry.get("model"),
+                    "user": user,
+                    "model": model,
                     "latency_ms": entry.get("latency_ms"),
                     "payload_size": entry.get("payload_char_count"),
                     "threats_intercepted": entry.get("tokens_anonymized"),
-                    "entities": entry.get("entity_breakdown", {})
+                    "entities": breakdown
                 })
                     
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": f"Failed to parse audit logs: {str(e)}"})
         
     avg_latency = round(total_latency / total_prompts, 2) if total_prompts > 0 else 0
-    
-    # Reverse the ledger so the most recent transactions appear at the top
     transaction_ledger.reverse()
+    
+    active_users = max(len(unique_users), 1)
     
     report = {
         "report_generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -725,9 +885,269 @@ async def generate_audit_report():
             "total_cloud_tokens_used": total_upstream_tokens,
             "total_characters_scanned": total_payload_volume
         },
+        "roi_metrics": {
+            "actual_api_cost": round(total_actual_cost, 2),
+            "flagship_cost_avoided": round(total_unoptimized_cost - total_actual_cost, 2),
+            "active_users": active_users,
+            "cost_per_user": round(total_actual_cost / active_users, 2)
+        },
         "model_utilization": dict(model_usage),
         "threat_categorization": dict(aggregated_threats),
-        "transaction_ledger": transaction_ledger  # NEW: Attach the itemized log
+        "transaction_ledger": transaction_ledger
     }
     
     return JSONResponse(content=report)
+
+def create_threat_bar_chart(threat_data: dict) -> Drawing:
+    """Generates a styled, enterprise-grade ReportLab Horizontal Bar Chart."""
+    # Create the drawing canvas
+    drawing = Drawing(width=450, height=200)
+    
+    # Extract and format the data
+    labels = list(threat_data.keys())
+    # ReportLab bar charts expect a list of lists for data series
+    data = [list(threat_data.values())] 
+    
+    # Determine the max value for dynamic axis scaling
+    max_value = max(data[0]) if data[0] else 10
+    
+    # Initialize the Horizontal Bar Chart
+    bc = HorizontalBarChart()
+    bc.x = 120  # Push chart right to make room for long category labels
+    bc.y = 20
+    bc.height = 160
+    bc.width = 300
+    bc.data = data
+    
+    # 🎨 Apply Enterprise Styling
+    # Configure the Bars
+    bc.bars[0].fillColor = colors.HexColor("#2C3E50") # Elm Tech Navy
+    bc.bars[0].strokeColor = colors.white
+    bc.bars[0].strokeWidth = 0.5
+    bc.barSpacing = 4
+    
+    # Configure the Value Axis (Bottom - The Numbers)
+    bc.valueAxis.valueMin = 0
+    bc.valueAxis.valueMax = max_value + (max_value * 0.2) # Add 20% padding to the right
+    bc.valueAxis.valueStep = max(1, int(max_value / 5)) # Create clean grid steps
+    bc.valueAxis.labels.fontSize = 9
+    bc.valueAxis.labels.fontName = 'Helvetica'
+    bc.valueAxis.labels.fillColor = colors.HexColor("#7F8C8D")
+    bc.valueAxis.visibleGrid = 1
+    bc.valueAxis.gridStrokeColor = colors.HexColor("#ECF0F1")
+    bc.valueAxis.gridStrokeWidth = 0.5
+    
+    # Configure the Category Axis (Left - The Labels)
+    bc.categoryAxis.labels.fontName = 'Helvetica-Bold'
+    bc.categoryAxis.labels.fontSize = 9
+    bc.categoryAxis.labels.fillColor = colors.HexColor("#34495E")
+    bc.categoryAxis.categoryNames = labels
+    bc.categoryAxis.tickLeft = 0 # Hide the tick marks for a cleaner look
+    bc.categoryAxis.visibleGrid = 0
+    
+    # Add the chart to the drawing
+    drawing.add(bc)
+    
+    return drawing
+
+def render_executive_pdf(report_data: dict) -> BytesIO:
+    """Uses PLATYPUS to render a branded, multi-page PDF document."""
+    buffer = BytesIO()
+    # Set up the document canvas
+    doc = SimpleDocTemplate(buffer, pagesize=letter, rightMargin=40, leftMargin=40, topMargin=40, bottomMargin=40)
+    elements = []
+    styles = getSampleStyleSheet()
+
+    # Custom Corporate Styles
+    title_style = ParagraphStyle(
+        'CorporateTitle', 
+        parent=styles['Heading1'], 
+        alignment=1, 
+        textColor=colors.HexColor("#1A252C"),
+        fontSize=18,
+        spaceAfter=6
+    )
+    subtitle_style = ParagraphStyle(
+        'CorporateSubtitle',
+        parent=styles['Heading3'],
+        alignment=1,
+        textColor=colors.HexColor("#7F8C8D"),
+        spaceAfter=20
+    )
+    
+    # 🏢 Header: Letterhead
+    logo_path = "/app/logo.png"
+    if os.path.exists(logo_path):
+        # The width and height are in points (1 point = 1/72 inch). 
+        # Adjust these numbers to perfectly scale your specific logo!
+        logo = Image(logo_path, width=200, height=70) 
+        logo.hAlign = 'CENTER'
+        elements.append(logo)
+        elements.append(Spacer(1, 10))
+    else:
+        # Fallback to text if the image is missing
+        elements.append(Paragraph("<b>Elm Tech Solutions LLC</b>", title_style))
+        
+    elements.append(Paragraph("Zero-Trust Edge Gateway: Monthly Security Audit", subtitle_style))
+    
+    # 📊 Part 1: Executive Summary
+    elements.append(Paragraph("Executive Summary", styles['Heading2']))
+    exec_data = report_data.get("executive_summary", {})
+    exec_text = (
+        f"<b>Report Generated:</b> {report_data.get('report_generated_at', 'N/A')}<br/><br/>"
+        f"<b>Total Prompts Processed:</b> {exec_data.get('total_prompts_processed', 0)}<br/>"
+        f"<b>Total Threats Intercepted:</b> {exec_data.get('total_threats_intercepted', 0)}<br/>"
+        f"<b>Average Processing Latency:</b> {exec_data.get('average_latency_ms', 0)} ms<br/>"
+        f"<b>Total Cloud Tokens Billed:</b> {exec_data.get('total_cloud_tokens_used', 0)}<br/>"
+        f"<b>Total Characters Scanned:</b> {exec_data.get('total_characters_scanned', 0)}"
+    )
+    elements.append(Paragraph(exec_text, styles['Normal']))
+    elements.append(Spacer(1, 20))
+
+    # 💰 Part 1.5: Enterprise Value & ROI
+    elements.append(Spacer(1, 10))
+    elements.append(Paragraph("Enterprise Value & ROI Mitigation", styles['Heading2']))
+    
+    roi = report_data.get("roi_metrics", {})
+    roi_table_data = [
+        ["Estimated Cloud API Expenditure:", f"${roi.get('actual_api_cost', 0):.2f}"],
+        ["Active Network Associates:", str(roi.get('active_users', 0))],
+        ["Average API Cost Per Associate:", f"${roi.get('cost_per_user', 0):.2f}/mo"],
+        ["Flagship Premium Avoided (Edge Routing Savings):", f"${roi.get('flagship_cost_avoided', 0):.2f}"],
+        ["Critical Data Breaches Averted (Entities Masked):", str(exec_data.get('total_threats_intercepted', 0))]
+    ]
+    
+    t_roi = Table(roi_table_data, colWidths=[300, 100])
+    t_roi.setStyle(TableStyle([
+        ('FONTNAME', (0, 0), (0, -1), 'Helvetica-Bold'),
+        ('TEXTCOLOR', (0, 0), (0, -1), colors.HexColor("#2C3E50")),
+        ('ALIGN', (1, 0), (1, -1), 'RIGHT'),
+        ('BACKGROUND', (0, 3), (1, 3), colors.HexColor("#E8F8F5")), # Subtle green highlight for savings
+        ('TEXTCOLOR', (1, 3), (1, 3), colors.HexColor("#117A65")),  # Dark green text for savings
+        ('BACKGROUND', (0, 4), (1, 4), colors.HexColor("#FDEDEC")), # Subtle red highlight for threats
+        ('TEXTCOLOR', (1, 4), (1, 4), colors.HexColor("#C0392B")),  # Dark red text for threats
+        ('GRID', (0, 0), (-1, -1), 0.25, colors.lightgrey),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 8),
+        ('TOPPADDING', (0, 0), (-1, -1), 8),
+    ]))
+    elements.append(t_roi)
+    elements.append(Spacer(1, 20))
+
+    # 🛡️ Part 2: Threat Categorization
+    elements.append(Paragraph("Threat Categorization Breakdown", styles['Heading2']))
+    threat_data = report_data.get("threat_categorization", {})
+    
+    if threat_data:
+        # 1. Add the Visual Bar Chart
+        threat_chart = create_threat_bar_chart(threat_data) # <-- UPDATE THIS LINE
+        elements.append(threat_chart)
+        elements.append(Spacer(1, 20))
+        
+        # 2. Add the Raw Data Table
+        threat_table_data = [["Compliance Entity Type", "Intercepted Count"]]
+        for k, v in threat_data.items():
+            threat_table_data.append([k, str(v)])
+            
+        t = Table(threat_table_data, colWidths=[250, 150])
+        t.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor("#2C3E50")),
+            ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+            ('BOTTOMPADDING', (0, 0), (-1, 0), 10),
+            ('BACKGROUND', (0, 1), (-1, -1), colors.HexColor("#F8F9F9")),
+            ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
+        ]))
+        elements.append(t)
+    else:
+        elements.append(Paragraph("No threats intercepted during this period.", styles['Normal']))
+        
+    elements.append(Spacer(1, 20))
+
+    # 📑 Part 3: Itemized Ledger
+    elements.append(Paragraph("Itemized Transaction Ledger", styles['Heading2']))
+    ledger = report_data.get("transaction_ledger", [])
+    if ledger:
+        # Define table headers
+        ledger_table_data = [["Timestamp", "Latency", "Payload", "Threats", "Model"]]
+        for row in ledger[:50]: # Capping at 50 for the MVP to prevent massive files
+            ledger_table_data.append([
+                row.get("timestamp", "").split(" ")[0], # Just date for space
+                f"{row.get('latency_ms', 0)} ms",
+                str(row.get("payload_size", 0)),
+                str(row.get("threats_intercepted", 0)),
+                row.get("model", "")
+            ])
+            
+        t2 = Table(ledger_table_data, colWidths=[80, 80, 80, 80, 100])
+        t2.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor("#34495E")),
+            ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+            ('GRID', (0, 0), (-1, -1), 0.25, colors.lightgrey),
+            ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor("#F2F4F4")])
+        ]))
+        elements.append(t2)
+    else:
+        elements.append(Paragraph("No transactions recorded.", styles['Normal']))
+
+    doc.build(elements)
+    buffer.seek(0)
+    return buffer
+
+@app.post("/v1/admin/force-audit-delivery")
+async def force_audit_delivery(month: str = None):
+    """QA Endpoint: Manually triggers report generation and email delivery."""
+    # Default to the current month if none is provided
+    if not month:
+        month = datetime.now().strftime("%Y_%m")
+        
+    print(f"Manual override triggered for month: {month}")
+    
+    try:
+        # 1. Fetch the data
+        report_response = await generate_audit_report(month)
+        if report_response.status_code != 200:
+            return JSONResponse(
+                status_code=500, 
+                content={"error": f"Failed to fetch data for {month}."}
+            )
+            
+        report_data = json.loads(report_response.body.decode('utf-8'))
+        
+        # 2. Render the PDF
+        pdf_buffer = render_executive_pdf(report_data)
+        
+        # 3. Fire the email
+        await send_monthly_audit_email(pdf_buffer, month)
+        
+        return JSONResponse(content={
+            "status": "success", 
+            "message": f"Audit for {month} rendered and dispatched to operator."
+        })
+        
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+@app.get("/v1/audit/pdf")
+async def generate_audit_pdf():
+    # 1. Fetch the exact same JSON data from our existing logic
+    # In a production app, we would extract the read loop to a shared helper function, 
+    # but for this MVP, we can directly call the existing endpoint function.
+    report_response = await generate_audit_report()
+    
+    if report_response.status_code != 200:
+        return report_response # Pass through the 404/500 errors
+        
+    report_data = json.loads(report_response.body.decode('utf-8'))
+    
+    # 2. Render the PDF buffer
+    pdf_buffer = render_executive_pdf(report_data)
+    
+    # 3. Stream it to the browser as a downloadable file
+    return StreamingResponse(
+        pdf_buffer, 
+        media_type="application/pdf",
+        headers={"Content-Disposition": f"attachment; filename=elm_tech_audit_{datetime.now().strftime('%Y%m%d')}.pdf"}
+    )

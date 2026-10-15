@@ -1,0 +1,6 @@
+services:
+  zero-trust-proxy:
+    volumes:
+      - ./main.py:/app/main.py
+      - ./logo.png:/app/logo.png    # <-- ADD THIS LINE
+    command: ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
