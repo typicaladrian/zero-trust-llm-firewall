@@ -62,10 +62,10 @@ REGEX_PATTERNS = {
     "Website / URL": r"(?i)\b(?:https?://|www\.)[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}(?:/[^\s]*)?\b",
     "Banking / SWIFT": r"(?i)(?:SWIFT|IBAN|BIC)[\s\w:]*?([A-Z0-9]{8,11})\b",
     
-    # NEW: Lookarounds prevent the punctuation boundary trap on L.L.P., LLC, etc.
+    # Lookarounds prevent the punctuation boundary trap on L.L.P., LLC, etc.
     "Law Firm / Corporation": r"(?i)(?<!\w)(?:[A-Z][a-zA-Z]+\s*[,&]?\s*){1,5}(?:L\.L\.P\.|LLP|L\.L\.C\.|LLC|P\.C\.|Inc\.|Corp\.)(?!\w)",
     
-    # NEW: Lookarounds capture Esq. perfectly
+    # Lookarounds capture Esq. perfectly
     "Legal Counsel (Esq)": r"(?i)(?<!\w)(?:[A-Z][a-zA-Z\.]+\s*){1,4},\s*Esq\.(?!\w)"
 }
 
@@ -307,7 +307,7 @@ async def startup_routines():
     asyncio.create_task(log_lifecycle_manager())
     
     # Trigger the monthly PDF automated delivery scheduler
-    asyncio.create_task(automated_report_scheduler()) # <-- ADD THIS LINE
+    asyncio.create_task(automated_report_scheduler())
     
     # Existing vault load logic
     if os.path.exists(VAULT_FILE):
@@ -348,7 +348,7 @@ class EntityVault:
         self.reverse_map: Dict[str, str] = {}
         self.counters = defaultdict(int)
         
-        # QA FIX: Dynamically build a strict token pattern based ONLY on our approved labels
+        # Dynamically build a strict token pattern based ONLY on our approved labels
         all_labels = PII_LABELS + list(REGEX_PATTERNS.keys())
         valid_bases = [lbl.upper().replace(" ", "_") for lbl in all_labels]
         self.internal_token_pattern = re.compile(
@@ -366,7 +366,7 @@ class EntityVault:
             self.entity_map[original_value] = token
             self.reverse_map[token] = original_value
             
-            # THE FIX: Smart Token Splitting for partial names
+            # Smart Token Splitting for partial names
             split_eligible_labels = {"person", "organization", "plaintiff", "defendant", "legal case"}
             if label.lower() in split_eligible_labels:
                 name_parts = original_value.split()
@@ -382,7 +382,7 @@ class EntityVault:
                         # Clean trailing punctuation from the part before mapping
                         clean_part = re.sub(r'[^A-Za-z0-9]', '', part)
                         
-                        # NEW: Increased length to > 3 to prevent 2-letter collisions
+                        # Increased length to > 3 to prevent 2-letter collisions
                         if len(clean_part) > 3 and clean_part.lower() not in STOPWORDS:
                             if clean_part not in self.entity_map:
                                 self.entity_map[clean_part] = token
@@ -395,7 +395,7 @@ class EntityVault:
         if not text.strip():
             return text
 
-        # NEW: Pre-clean known OCR/SEC pagination noise before chunking
+        # Pre-clean known OCR/SEC pagination noise before chunking
         text = re.sub(r'(?:\n\s*(?:th|page)\s*){2,}', '\n', text, flags=re.IGNORECASE)
 
         chunks = chunk_text(text, max_words=400)
@@ -469,7 +469,7 @@ class EntityVault:
             # ==========================================
             # STEP 2: The Context Engine (GLiNER2)
             # ==========================================
-            # THE FIX: Explicitly set threshold to 0.30 for higher entity recall
+            # Explicitly set threshold to 0.30 for higher entity recall
             extraction_results = gliner_model.extract_entities(
                 mutated_chunk, 
                 PII_LABELS, 
@@ -495,15 +495,15 @@ class EntityVault:
                     if ent_text.startswith("[") and ent_text.endswith("]"):
                         continue
 
-                    # 4. NEW: Ignore if it is purely punctuation or underscores
+                    # 4. Ignore if it is purely punctuation or underscores
                     if not re.search(r'[A-Za-z0-9]', ent_text):
                         continue
                         
-                    # 5. QA FIX: Strictly ignore ONLY our exact generated token structures
+                    # 5. Strictly ignore ONLY our exact generated token structures
                     if self.internal_token_pattern.search(ent_text):
                         continue
                         
-                    # THE FIX: Replace \b with negative lookarounds
+                    # Replace \b with negative lookarounds
                     pattern = r"(?i)(?<!\w)" + re.escape(ent_text) + r"(?!\w)"
                     for match in re.finditer(pattern, mutated_chunk):
                         gliner_matches.append({
@@ -539,7 +539,7 @@ class EntityVault:
         keys_to_sweep.sort(key=len, reverse=True)
         
         if keys_to_sweep:
-            # THE FIX: Replace \b with negative lookarounds
+            # Replace \b with negative lookarounds
             escaped_keys = [re.escape(k) for k in keys_to_sweep]
             combined_pattern = re.compile(r"(?<!\w)(" + "|".join(escaped_keys) + r")(?!\w)", flags=re.IGNORECASE)
             
@@ -818,7 +818,7 @@ async def generate_audit_report(month: str = None):
     aggregated_threats = defaultdict(int)
     transaction_ledger = []
     
-    # 💰 NEW: ROI Trackers
+    # ROI Trackers
     unique_users = set()
     total_actual_cost = 0.0
     total_unoptimized_cost = 0.0
@@ -853,7 +853,7 @@ async def generate_audit_report(month: str = None):
                 model_usage[model] += 1
                 unique_users.add(user)
                 
-                # 💰 NEW: Calculate Financials
+                # Calculate Financials
                 total_actual_cost += (tokens * PRICING.get(model, PRICING["gpt-4o-mini"]))
                 total_unoptimized_cost += (tokens * FLAGSHIP_RATE)
                 
@@ -922,7 +922,7 @@ def create_threat_bar_chart(threat_data: dict) -> Drawing:
     bc.width = 300
     bc.data = data
     
-    # 🎨 Apply Enterprise Styling
+    # Apply Enterprise Styling
     # Configure the Bars
     bc.bars[0].fillColor = colors.HexColor("#2C3E50") # Elm Tech Navy
     bc.bars[0].strokeColor = colors.white
@@ -1007,7 +1007,7 @@ def render_executive_pdf(report_data: dict) -> BytesIO:
     elements.append(Paragraph(exec_text, styles['Normal']))
     elements.append(Spacer(1, 20))
 
-    # 💰 Part 1.5: Enterprise Value & ROI
+    # Part 1.5: Enterprise Value & ROI
     elements.append(Spacer(1, 10))
     elements.append(Paragraph("Enterprise Value & ROI Mitigation", styles['Heading2']))
     
