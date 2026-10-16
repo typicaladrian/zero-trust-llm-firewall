@@ -6,8 +6,9 @@ services:
       dockerfile: Dockerfile
     container_name: zero-trust-proxy
     ports:
-      # Bind exclusively to localhost so LAN users cannot bypass Open WebUI
       - "127.0.0.1:8000:8000"
+    environment:
+      - TZ=America/New_York  # Monthly report scheduler runs on Eastern time
     env_file:
       - .env
     volumes:
@@ -23,7 +24,8 @@ services:
     environment:
       - 'OPENAI_API_BASE_URL=http://zero-trust-proxy:8000/v1'
       - 'OPENAI_API_KEY=sk-proxy'
-      - 'WEBUI_SECRET_KEY=zero_trust_edge_node_secret_key_2026'
+      # Shared with the proxy (via .env) so it can verify the forwarded user JWT
+      - 'WEBUI_SECRET_KEY=${WEBUI_SECRET_KEY:?Set WEBUI_SECRET_KEY in .env}'
       - 'ENABLE_MESSAGE_RATING=False' 
       # Forces Open WebUI to forward user info as a signed JWT
       - 'ENABLE_FORWARD_USER_INFO_HEADERS=True'
