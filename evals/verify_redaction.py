@@ -1,8 +1,9 @@
 import re
 import os
+from pathlib import Path
 
 def run_audit():
-    file_path = "redacted_audit_report.txt"
+    file_path = Path(__file__).resolve().parent / "output" / "redacted_audit_report.txt"
     
     if not os.path.exists(file_path):
         print(f"❌ Error: {file_path} not found. Run the stress test first.")

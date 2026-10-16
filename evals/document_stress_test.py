@@ -2,6 +2,9 @@ import urllib.request
 import json
 import time
 import os
+from pathlib import Path
+
+EVALS_DIR = Path(__file__).resolve().parent
 
 def run_document_load_test(file_path):
     url = "http://127.0.0.1:8000/v1/chat/completions"
@@ -51,7 +54,8 @@ def run_document_load_test(file_path):
             assistant_msg = response_json.get("choices", [{}])[0].get("message", {}).get("content", "")
             
             # Write the fully redacted document to a new text file for manual auditing
-            output_filename = "redacted_audit_report.txt"
+            os.makedirs(EVALS_DIR / "output", exist_ok=True)
+            output_filename = EVALS_DIR / "output" / "redacted_audit_report.txt"
             with open(output_filename, "w", encoding="utf-8") as out_file:
                 out_file.write(assistant_msg)
                 
@@ -61,4 +65,4 @@ def run_document_load_test(file_path):
         print(f"❌ Failed to process document: {e}")
 
 if __name__ == "__main__":
-    run_document_load_test("massive_contract.txt")
+    run_document_load_test(EVALS_DIR / "fixtures" / "massive_contract.txt")

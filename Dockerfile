@@ -23,6 +23,7 @@ RUN python -c "from gliner2 import GLiNER2; GLiNER2.from_pretrained('fastino/gli
 
 # Copy the application code LAST
 COPY main.py .
+COPY assets/logo.png ./logo.png
 
 EXPOSE 8000
 

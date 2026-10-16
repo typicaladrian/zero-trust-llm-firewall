@@ -2,7 +2,16 @@ import json
 import re
 import os
 import time
+import sys
+from pathlib import Path
+
+EVALS_DIR = Path(__file__).resolve().parent
+sys.path.insert(0, str(EVALS_DIR.parent))  # make main.py importable from any working directory
+
 from main import EntityVault, STOPWORDS
+
+FIXTURES_DIR = EVALS_DIR / "fixtures" / "cuad"
+OUTPUT_DIR = EVALS_DIR / "output"
 
 def run_benchmark(contract_text: str, ground_truth_json_path: str, output_txt_path: str):
     # 1. Load the Ground Truth entities
@@ -96,36 +105,37 @@ def run_benchmark(contract_text: str, ground_truth_json_path: str, output_txt_pa
             print(f" [REDACTED] -> {string}")
 
 if __name__ == "__main__":
+    OUTPUT_DIR.mkdir(exist_ok=True)
     test_suite = [
         {
             "name": "CUAD Contract #1 (I-Escrow)",
-            "text_path": "test_textfiles/cuad_contract_1.txt",
-            "json_path": "test_textfiles/cuad_1_ground_truth.json",
-            "out_path": "test_textfiles/cuad_1_redacted.txt"
+            "text_path": FIXTURES_DIR / "cuad_contract_1.txt",
+            "json_path": FIXTURES_DIR / "cuad_1_ground_truth.json",
+            "out_path": OUTPUT_DIR / "cuad_1_redacted.txt"
         },
         {
             "name": "CUAD Contract #2 (Services Agreement)",
-            "text_path": "test_textfiles/cuad_contract_2.txt",
-            "json_path": "test_textfiles/cuad_2_ground_truth.json",
-            "out_path": "test_textfiles/cuad_2_redacted.txt"
+            "text_path": FIXTURES_DIR / "cuad_contract_2.txt",
+            "json_path": FIXTURES_DIR / "cuad_2_ground_truth.json",
+            "out_path": OUTPUT_DIR / "cuad_2_redacted.txt"
         },
         {
             "name": "CUAD Contract #3 (Strategic Alliance)",
-            "text_path": "test_textfiles/cuad_contract_3.txt",
-            "json_path": "test_textfiles/cuad_3_ground_truth.json",
-            "out_path": "test_textfiles/cuad_3_redacted.txt"
+            "text_path": FIXTURES_DIR / "cuad_contract_3.txt",
+            "json_path": FIXTURES_DIR / "cuad_3_ground_truth.json",
+            "out_path": OUTPUT_DIR / "cuad_3_redacted.txt"
         },
         {
             "name": "CUAD Contract #4 (AFSALA...)",
-            "text_path": "test_textfiles/cuad_contract_4.txt",
-            "json_path": "test_textfiles/cuad_4_ground_truth.json",
-            "out_path": "test_textfiles/cuad_4_redacted.txt"
+            "text_path": FIXTURES_DIR / "cuad_contract_4.txt",
+            "json_path": FIXTURES_DIR / "cuad_4_ground_truth.json",
+            "out_path": OUTPUT_DIR / "cuad_4_redacted.txt"
         },
         {
             "name": "CUAD Contract #5 (AzulSa_...)",
-            "text_path": "test_textfiles/cuad_contract_5.txt",
-            "json_path": "test_textfiles/cuad_5_ground_truth.json",
-            "out_path": "test_textfiles/cuad_5_redacted.txt"
+            "text_path": FIXTURES_DIR / "cuad_contract_5.txt",
+            "json_path": FIXTURES_DIR / "cuad_5_ground_truth.json",
+            "out_path": OUTPUT_DIR / "cuad_5_redacted.txt"
         }
     ]
     
