@@ -223,9 +223,10 @@ async def send_monthly_audit_email(pdf_buffer: BytesIO, target_month: str):
     client_name = os.environ.get("CLIENT_ORG_NAME", "Enterprise Client")
     appliance_id = os.environ.get("APPLIANCE_ID", "ELM-NUC-UNKNOWN")
     operator_email = os.environ.get("OPERATOR_EMAIL")
-    
-    if not resend.api_key or not operator_email:
-        print("CRITICAL ERROR: Missing Resend API Key or Operator Email. Cannot send report.")
+    sender_email = os.environ.get("EMAIL_SENDER")
+
+    if not resend.api_key or not operator_email or not sender_email:
+        print("CRITICAL ERROR: Missing EMAIL_API_KEY, OPERATOR_EMAIL, or EMAIL_SENDER. Cannot send report.")
         return
 
     try:
@@ -233,7 +234,7 @@ async def send_monthly_audit_email(pdf_buffer: BytesIO, target_month: str):
         pdf_bytes = list(pdf_buffer.getvalue())
         
         params = {
-            "from": os.environ.get("EMAIL_SENDER", "adrian@elmtechsecurity.com"),
+            "from": sender_email,
             "to": [operator_email],
             "subject": f"[{appliance_id}] Monthly Security Audit - {client_name}",
             "html": f"""
@@ -666,9 +667,11 @@ async def chat_completions(request: Request):
     )
 
     jwt_token = request.headers.get("x-openwebui-user-jwt")
-    if jwt_token:
+    secret_key = os.getenv("WEBUI_SECRET_KEY")
+    if jwt_token and not secret_key:
+        exact_user = "ERROR_NO_SECRET_CONFIGURED"
+    elif jwt_token:
         try:
-            secret_key = os.getenv("WEBUI_SECRET_KEY", "zero_trust_edge_node_secret_key_2026")
             decoded_payload = jwt.decode(jwt_token, secret_key, algorithms=["HS256"])
             exact_user = decoded_payload.get("email") or decoded_payload.get("sub") or exact_user
         except jwt.ExpiredSignatureError:
