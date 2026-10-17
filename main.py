@@ -978,7 +978,7 @@ def render_executive_pdf(report_data: dict) -> BytesIO:
         spaceAfter=20
     )
     
-    # 🏢 Header: Letterhead
+    # Header: Letterhead
     logo_path = "/app/logo.png"
     if os.path.exists(logo_path):
         # The width and height are in points (1 point = 1/72 inch). 
@@ -993,7 +993,7 @@ def render_executive_pdf(report_data: dict) -> BytesIO:
         
     elements.append(Paragraph("Zero-Trust Edge Gateway: Monthly Security Audit", subtitle_style))
     
-    # 📊 Part 1: Executive Summary
+    # Part 1: Executive Summary
     elements.append(Paragraph("Executive Summary", styles['Heading2']))
     exec_data = report_data.get("executive_summary", {})
     exec_text = (
@@ -1036,7 +1036,7 @@ def render_executive_pdf(report_data: dict) -> BytesIO:
     elements.append(t_roi)
     elements.append(Spacer(1, 20))
 
-    # 🛡️ Part 2: Threat Categorization
+    # Part 2: Threat Categorization
     elements.append(Paragraph("Threat Categorization Breakdown", styles['Heading2']))
     threat_data = report_data.get("threat_categorization", {})
     
@@ -1067,7 +1067,7 @@ def render_executive_pdf(report_data: dict) -> BytesIO:
         
     elements.append(Spacer(1, 20))
 
-    # 📑 Part 3: Itemized Ledger
+    # Part 3: Itemized Ledger
     elements.append(Paragraph("Itemized Transaction Ledger", styles['Heading2']))
     ledger = report_data.get("transaction_ledger", [])
     if ledger:
