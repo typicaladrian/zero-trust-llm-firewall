@@ -34,16 +34,58 @@ def test_regex_layer_redacts_structured_identifiers(text, secret):
     assert TOKEN.search(redacted)
 
 
-@pytest.mark.xfail(reason="#6: overlapping regex matches are spliced together, mangling output and leaking fragments")
 def test_overlapping_regex_matches_do_not_corrupt_text():
-    # A card number directly followed by an address: the address pattern can start
-    # inside the card match ("9010 billed to ..."). See docs/architecture.md.
+    # A card number directly followed by an address: the address pattern also starts at
+    # the card's first digit and runs on to the ZIP, so the two spans overlap (#6).
     text = "Card 4000 1234 5678 9010 billed to 45 Main Street, Hackensack, NJ 07601 yesterday."
     vault = EntityVault()
     redacted = vault.anonymize_text(text)
 
     assert_no_leak(redacted, ["4000 1234", "5678 9010", "45 Main Street", "601"])
     assert vault.deanonymize_text(redacted) == text, f"Round trip broken; redacted was {redacted!r}"
+
+
+def test_regex_match_nested_inside_another_is_redacted_once():
+    # The email sits inside the URL match
+    text = "See https://files.example.com/u/jane.doe@example.com today."
+    vault = EntityVault()
+    redacted = vault.anonymize_text(text)
+
+    assert_no_leak(redacted, ["files.example", "jane.doe", "example.com"])
+    assert len(TOKEN.findall(redacted)) == 1, redacted
+    assert vault.deanonymize_text(redacted) == text, f"Round trip broken; redacted was {redacted!r}"
+
+
+def test_partially_overlapping_regex_matches_are_merged(monkeypatch):
+    # Neither span covers the other, so keeping only one would leak the other's tail
+    monkeypatch.setattr(main, "REGEX_PATTERNS", {"Alpha": r"AAA BBB", "Beta": r"BBB CCC"})
+    text = "Ref AAA BBB CCC end."
+    vault = EntityVault()
+    redacted = vault.anonymize_text(text)
+
+    assert redacted == "Ref [ALPHA_1] end."
+    assert vault.deanonymize_text(redacted) == text
+
+
+def test_same_span_matches_yield_one_token_with_the_first_pattern_label(monkeypatch):
+    monkeypatch.setattr(main, "REGEX_PATTERNS", {"Alpha": r"AAA BBB", "Beta": r"AAA BBB"})
+    text = "Ref AAA BBB end."
+    vault = EntityVault()
+    redacted = vault.anonymize_text(text)
+
+    assert redacted == "Ref [ALPHA_1] end."
+    assert dict(vault.counters) == {"ALPHA": 1}
+    assert vault.deanonymize_text(redacted) == text
+
+
+def test_adjacent_regex_matches_stay_separate():
+    # Guards against over-merging: spans that don't overlap keep their own tokens and labels
+    text = "SSN 123-45-6789, jane.doe@example.com today."
+    vault = EntityVault()
+    redacted = vault.anonymize_text(text)
+
+    assert redacted == "SSN [SOCIAL_SECURITY_NUMBER_1], [EMAIL_ADDRESS_1] today."
+    assert vault.deanonymize_text(redacted) == text
 
 
 # ---------------------------------------------------------------------------
