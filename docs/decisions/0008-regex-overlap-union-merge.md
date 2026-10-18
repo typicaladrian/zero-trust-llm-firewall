@@ -11,6 +11,6 @@ The vault and NER layers already de-overlap with "leftmost wins; at the same sta
 Before replacing, merge overlapping regex spans (`start < previous end`) into one span covering their union. The merged span takes the label of its longest member; ties go to `REGEX_PATTERNS` order. Spans that only touch stay separate. The vault and NER layers keep their own rule.
 
 ## Consequences
-- No character a regex pattern matched reaches the LLM, and redact → restore is exact.
+- No character a regex pattern matched reaches the LLM, and redact → restore of regex matches is exact.
 - One token can stand for text that more than one pattern matched. Audit and PDF category counts then show only the winning label. In the #6 case a card number followed by a US address counts as one `ADDRESS_(US)` rather than a card plus an address.
 - A chain of overlapping matches becomes one large token, which can over-redact. The US-address pattern pulling in a preceding number is a precision problem in that pattern, not in the merge.

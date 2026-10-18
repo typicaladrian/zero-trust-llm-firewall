@@ -88,6 +88,17 @@ def test_adjacent_regex_matches_stay_separate():
     assert vault.deanonymize_text(redacted) == text
 
 
+def test_touching_regex_matches_stay_separate(monkeypatch):
+    # One span ends exactly where the next begins: that is not an overlap
+    monkeypatch.setattr(main, "REGEX_PATTERNS", {"Alpha": r"AAA", "Beta": r"BBB"})
+    text = "Ref AAABBB end."
+    vault = EntityVault()
+    redacted = vault.anonymize_text(text)
+
+    assert redacted == "Ref [ALPHA_1][BETA_1] end."
+    assert vault.deanonymize_text(redacted) == text
+
+
 # ---------------------------------------------------------------------------
 # NER integration logic (fake model decides what is an entity)
 # ---------------------------------------------------------------------------
