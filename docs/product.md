@@ -18,17 +18,17 @@ A preconfigured mini PC installed on the firm's LAN and managed remotely: engine
 
 Everything the firm is told becomes a requirement with a check. A promise with no automated check is a risk: a refactor could quietly break it while the sales material keeps promising it.
 
-| # | Promise made to firms | Requirement | Verified by today |
-|---|---|---|---|
-| P1 | "Raw case data never leaves your network" | Every message an LLM receives in the zero-trust lane is redacted, for every role and content shape | **Partly.** Only string `content` on non-system roles is redacted. No automated test |
-| P2 | Detects names, parties, case citations, docket numbers, diagnoses, medications, MRNs, card/bank numbers, TIN, SWIFT/IBAN, addresses (US and UK), SSN, driver's license, passport, email, phone | Each listed entity type is detected | `evals/benchmark.py` measures overall recall (91.4% strict on CUAD). No per-type test |
-| P3 | "Cryptographic Shredding" / "irreversible SHA-256 hashing" of client lists | Client names can't be recovered from what is stored | **No.** Hashes are unsalted, so a list of likely names can be hashed and compared. See [decision 0005](decisions/0005-client-vault-stores-hashes.md) |
-| P4 | Zero plaintext persistence; mappings exist only in RAM | Nothing written to disk contains original values | No test. The redacted payload is printed to stdout and ends up in Docker logs |
-| P5 | Immutable metadata audit log with user identity, never prompt text | Logs have metadata only, with a verified user | No test. Log format isn't tamper-evident |
-| P6 | Real-time reconstruction: associates see plain text | Placeholders in the response are fully restored | Manually via `scripts/multiturn_smoke_test.py` |
-| P7 | Local auditor endpoint lets compliance staff see the exact sanitized payload | `elm-tech-auditor` returns exactly what would be sent | Manually via `scripts/stress_test.py` |
-| P8 | Separate unredacted lane for public research | `public-research-base` skips redaction and streams | Manually |
-| P9 | Monthly compliance and ROI report | The PDF arrives by email on the 1st with correct numbers | Manually via `/v1/admin/force-audit-delivery` |
-| P10 | Redaction needs zero cloud connectivity | The engine runs offline once the image is built | Model weights are baked into the image at build time. No offline test |
+| # | Promise made to firms | Requirement | Verified by | Status |
+|---|---|---|---|---|
+| P1 | "Raw case data never leaves your network" | Every message an LLM receives in the zero-trust lane is redacted, for every role and content shape | [test_zero_trust_lane.py](../tests/test_zero_trust_lane.py) | **Gap:** system-role and multi-part messages aren't redacted (xfail) |
+| P2 | Detects names, parties, case citations, docket numbers, diagnoses, medications, MRNs, card/bank numbers, TIN, SWIFT/IBAN, addresses (US and UK), SSN, driver's license, passport, email, phone | Each listed entity type is detected | [test_entity_coverage.py](../tests/model/test_entity_coverage.py) (one test per type), [test_redaction_engine.py](../tests/test_redaction_engine.py), [benchmark.py](../evals/benchmark.py) (91.4% strict CUAD recall) | All 20 types pass. **Bug:** overlapping regex matches corrupt output (xfail) |
+| P3 | "Cryptographic Shredding" / "irreversible SHA-256 hashing" of client lists | Client names can't be recovered from what is stored | [test_redaction_engine.py](../tests/test_redaction_engine.py) | No plaintext stored. **Gap:** unsalted hashes can be confirmed by guessing (xfail, [decision 0005](decisions/0005-client-vault-stores-hashes.md)) |
+| P4 | Zero plaintext persistence; mappings exist only in RAM | Nothing written to disk contains original values | [test_audit_log.py](../tests/test_audit_log.py) | Audit file and stdout contain no secrets |
+| P5 | Immutable metadata audit log with user identity, never prompt text | Logs have metadata only, with a verified user | [test_audit_log.py](../tests/test_audit_log.py) | Metadata-only and JWT attribution pass. Tamper-evidence isn't built |
+| P6 | Real-time reconstruction: associates see plain text | Placeholders in the response are fully restored | [test_zero_trust_lane.py](../tests/test_zero_trust_lane.py) | Pass |
+| P7 | Local auditor endpoint lets compliance staff see the exact sanitized payload | `elm-tech-auditor` returns the redacted text and never calls an LLM | [test_zero_trust_lane.py](../tests/test_zero_trust_lane.py) | Pass |
+| P8 | Separate unredacted lane for public research | `public-research-base` skips redaction | [test_zero_trust_lane.py](../tests/test_zero_trust_lane.py) | Pass |
+| P9 | Monthly compliance and ROI report | The PDF arrives by email on the 1st with correct numbers | Manual: `/v1/admin/force-audit-delivery` | Not automated |
+| P10 | Redaction needs zero cloud connectivity | The engine runs offline once the image is built | None | Not tested |
 
-Turning the "No" and "Manually" rows into automated checks is the goal of the Phase 0 eval suite. Each row should end up linked to a test file.
+Known gaps are written as tests marked `xfail(strict=True)`: they describe the correct behavior and are expected to fail. When a fix makes one pass, the strict marker fails the run until the marker is removed, so gaps can't be closed (or reopened) silently.

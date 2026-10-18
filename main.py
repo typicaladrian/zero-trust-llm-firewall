@@ -181,7 +181,9 @@ def chunk_text(text: str, max_words: int = 400) -> List[str]:
 
 # Global in-memory vault and disk path
 CLIENT_HASH_VAULT = set()
-VAULT_FILE = "/app/logs/client_hashes.json"
+# Persistent data directory (Docker volume in production; overridable for tests)
+LOG_DIR = os.getenv("AUDIT_LOG_DIR", "/app/logs")
+VAULT_FILE = os.path.join(LOG_DIR, "client_hashes.json")
 
 def generate_secure_hash(text: str) -> str:
     # Normalizes text (lowercases, strips punctuation) to ensure reliable hashing
@@ -192,7 +194,7 @@ async def log_lifecycle_manager():
     """Runs continuously in the background to compress old logs and prune >90 days."""
     while True:
         try:
-            log_dir = "/app/logs"
+            log_dir = LOG_DIR
             os.makedirs(log_dir, exist_ok=True)
             current_month = datetime.now().strftime("%Y_%m")
             
@@ -705,9 +707,9 @@ async def chat_completions(request: Request):
         is_background_task = any(phrase in last_user_msg for phrase in ignore_phrases)
         
         if not is_background_task:
-            os.makedirs("/app/logs", exist_ok=True)
+            os.makedirs(LOG_DIR, exist_ok=True)
             current_month = datetime.now().strftime("%Y_%m")
-            log_path = f"/app/logs/audit_{current_month}.jsonl" 
+            log_path = os.path.join(LOG_DIR, f"audit_{current_month}.jsonl")
             
             with open(log_path, "a") as f:
                 f.write(json.dumps(audit_entry) + "\n")
@@ -804,7 +806,7 @@ async def generate_audit_report(month: str = None):
     if not month:
         month = datetime.now().strftime("%Y_%m")
         
-    log_path = f"/app/logs/audit_{month}.jsonl"
+    log_path = os.path.join(LOG_DIR, f"audit_{month}.jsonl")
     
     if not os.path.exists(log_path):
         return JSONResponse(status_code=404, content={"error": f"No audit logs found for {month}."})
