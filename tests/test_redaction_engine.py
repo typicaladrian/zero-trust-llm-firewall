@@ -34,7 +34,7 @@ def test_regex_layer_redacts_structured_identifiers(text, secret):
     assert TOKEN.search(redacted)
 
 
-@pytest.mark.xfail(reason="Bug: overlapping regex matches are spliced together, mangling output and leaking fragments")
+@pytest.mark.xfail(reason="#6: overlapping regex matches are spliced together, mangling output and leaking fragments")
 def test_overlapping_regex_matches_do_not_corrupt_text():
     # A card number directly followed by an address: the address pattern can start
     # inside the card match ("9010 billed to ..."). See docs/architecture.md.
@@ -120,7 +120,7 @@ def test_vault_file_contains_no_plaintext_names(client, isolated_state):
     assert all(re.fullmatch(r"[0-9a-f]{64}", h) for h in json.loads(stored))
 
 
-@pytest.mark.xfail(reason="P3 gap: unsalted SHA-256 lets a guessed name be confirmed (decision 0005)")
+@pytest.mark.xfail(reason="#7: unsalted SHA-256 lets a guessed name be confirmed (P3, decision 0005)")
 def test_vault_hashes_cannot_be_confirmed_by_guessing_a_name(client, isolated_state):
     client.post("/v1/vault/sync", json={"names": ["Northbridge Capital"]})
     stored = set(json.loads((isolated_state / "client_hashes.json").read_text()))

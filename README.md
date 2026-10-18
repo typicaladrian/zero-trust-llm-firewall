@@ -1,5 +1,7 @@
 # Zero-Trust LLM Firewall
 
+[![Tests](https://github.com/typicaladrian/zero-trust-llm-firewall/actions/workflows/tests.yml/badge.svg)](https://github.com/typicaladrian/zero-trust-llm-firewall/actions/workflows/tests.yml)
+
 An on-premises gateway that lets law firms use frontier LLMs (Claude, GPT) **without sending client-identifying data to the cloud**. Every prompt is scanned locally. Names, case details, financial identifiers and health information are swapped for placeholder tokens before the request leaves the network. The model's reply is then restored to plain text on the way back.
 
 Built as the core of the *Zero-Trust AI Edge Gateway*, a hardware appliance product from Elm Tech Solutions LLC.
@@ -126,8 +128,9 @@ docker-compose*.yml     Proxy + Open WebUI stack, dev override
 ## Roadmap
 
 - Extend redaction to system-role and multi-part (attachment) messages
+- Fix overlapping regex matches in the redaction pipeline
 - Keyed hashing (HMAC) for the client vault, and a tamper-evident audit log
-- Automated eval suite with a recall threshold enforced in CI
+- Run the full CUAD benchmark on a schedule, with a minimum-recall threshold
 - Split `main.py` into modules (engine, routing, audit, reporting)
 - Authentication on admin and vault endpoints
 
