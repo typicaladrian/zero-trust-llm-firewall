@@ -18,7 +18,7 @@ Short notes on significant design choices: what was decided, why, and what it co
 
 Never edit an accepted record to reverse it. Write a new one that supersedes it.
 
-Records 0001–0007 were reconstructed from the commit history in October 2026. Where the original reasoning wasn't written down, they say **Owner to confirm**.
+Records 0001–0007 were reconstructed in October 2026 from the commit history and the owner's account of past decisions.
 
 | # | Decision | Status |
 |---|---|---|
