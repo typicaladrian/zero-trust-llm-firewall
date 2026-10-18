@@ -1,4 +1,4 @@
-"""EntityVault unit tests (fast tier). Covers promise P2's deterministic layers and P3.
+"""EntityVault unit tests (fast tier). Covers promise P2's deterministic layers, P3, and P6's exact round trip.
 
 See docs/product.md for the promise numbers.
 """
