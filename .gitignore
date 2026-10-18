@@ -9,3 +9,7 @@ evals/output/
 # Local-only business material (pricing, client lists, sales docs)
 private/
 .pytest_cache/
+
+# Claude Code: personal overrides and hook cache
+.claude/settings.local.json
+.claude/hooks/.last-green
