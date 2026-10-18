@@ -393,6 +393,29 @@ class EntityVault:
             
         return text[:start] + token + text[end:]
 
+    @staticmethod
+    def _merge_overlapping_regex(matches: list, chunk: str) -> list:
+        """Merge overlapping regex spans into their union so no matched character survives (#6).
+
+        Unlike the vault and NER layers (leftmost wins), a partial overlap here would leak the
+        dropped span's tail. Each merged span takes the label of its longest member, ties going
+        to REGEX_PATTERNS order. Spans that only touch stay separate.
+        """
+        groups = []
+        for m in sorted(matches, key=lambda x: (x['start'], x['order'])):
+            if groups and m['start'] < groups[-1]['end']:
+                groups[-1]['end'] = max(groups[-1]['end'], m['end'])
+                groups[-1]['members'].append(m)
+            else:
+                groups.append({'start': m['start'], 'end': m['end'], 'members': [m]})
+
+        return [{
+            'start': g['start'],
+            'end': g['end'],
+            'text': chunk[g['start']:g['end']],
+            'label': max(g['members'], key=lambda x: (x['end'] - x['start'], -x['order']))['label']
+        } for g in groups]
+
     def anonymize_text(self, text: str) -> str:
         if not text.strip():
             return text
@@ -410,17 +433,17 @@ class EntityVault:
             # STEP 0: The Safety Net (Regex Pre-Filter)
             # ==========================================
             regex_matches = []
-            for label, pattern in REGEX_PATTERNS.items():
+            for order, (label, pattern) in enumerate(REGEX_PATTERNS.items()):
                 for match in re.finditer(pattern, mutated_chunk):
                     regex_matches.append({
                         'start': match.start(),
                         'end': match.end(),
-                        'text': match.group(),
-                        'label': label
+                        'label': label,
+                        'order': order
                     })
-            
-            regex_matches = sorted(regex_matches, key=lambda x: x['start'], reverse=True)
-            for match in regex_matches:
+
+            regex_matches = self._merge_overlapping_regex(regex_matches, mutated_chunk)
+            for match in sorted(regex_matches, key=lambda x: x['start'], reverse=True):
                 mutated_chunk = self._register_and_replace(
                     mutated_chunk, match['label'], match['text'], match['start'], match['end']
                 )

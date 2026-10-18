@@ -56,7 +56,7 @@ Text is split into 400-word chunks (`chunk_text`). Each chunk goes through the f
 
 Supporting details:
 - `_register_and_replace` gives each distinct value one stable token per request, so "Jane Smith" is `[PERSON_1]` every time it appears. For person, organization, party and case labels, it also maps name parts longer than 3 characters (all parts for people, only the first word for organizations). That way a later "Smith" also becomes `[PERSON_1]`.
-- Vault and NER matches are de-overlapped (leftmost wins; at the same start, longest wins). Replacements run from the end of the text backward so character offsets stay valid. Regex matches (step 0) are **not** de-overlapped. When two patterns match overlapping spans, the output is spliced and fragments leak (reproduced by `test_overlapping_regex_matches_do_not_corrupt_text`, currently xfail).
+- Vault and NER matches are de-overlapped (leftmost wins; at the same start, longest wins). Regex matches (step 0) are instead merged: overlapping spans become one span covering their union, labelled by the longest member (ties go to `REGEX_PATTERNS` order), so no character any pattern matched can leak ([decision 0008](decisions/0008-regex-overlap-union-merge.md)). Spans that only touch stay separate. In every layer, replacements run from the end of the text backward so character offsets stay valid.
 - `STOPWORDS` is the main tool for precision: it stops legal boilerplate ("Indemnifying Party", "Section") from being redacted. Adding words here can lower recall, so benchmark any change.
 
 ## Audit and reporting
