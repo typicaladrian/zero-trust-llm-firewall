@@ -8,3 +8,4 @@ evals/output/
 
 # Local-only business material (pricing, client lists, sales docs)
 private/
+.pytest_cache/
