@@ -75,6 +75,19 @@ docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
 | `GET` | `/v1/audit/pdf` | Current month's executive PDF report |
 | `POST` | `/v1/admin/force-audit-delivery` | Build and email a report on demand |
 
+## Testing
+
+Each product promise made to firms is mapped to the tests that verify it in [docs/product.md](docs/product.md). The tests run in three tiers:
+
+```bash
+pip install -r requirements-dev.txt
+pytest                              # fast tier (~15 s): pipeline logic, all three lanes, audit log; NER model stubbed
+ZT_REAL_MODEL=1 pytest -m model     # model tier (~40 s): real GLiNER2 on every promised entity type
+python evals/benchmark.py           # full tier (~13 min): CUAD recall benchmark below
+```
+
+Leak tests send prompts through the real FastAPI app and capture everything that would be sent to the LLM. Known gaps are written as strict `xfail` tests, so each one is documented and fixing it is enforced.
+
 ## Evaluating redaction
 
 The `evals/` folder measures redaction **recall**: how many known sensitive entities the engine caught. It runs against real commercial contracts from the CUAD dataset, each paired with a hand-labelled ground-truth list.
@@ -102,6 +115,7 @@ Scoring is deliberately strict: if any two-word fragment of a multi-word entity 
 
 ```
 main.py                 FastAPI proxy: redaction engine, routing, audit, reporting
+tests/                  pytest suite: fast tier + model tier (tests/model/)
 evals/                  Redaction benchmarks + CUAD fixtures (outputs → evals/output/, gitignored)
 scripts/                Ops utilities: chat pruning, vault sync, smoke and stress tests
 assets/                 Report branding
