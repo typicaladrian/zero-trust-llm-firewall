@@ -37,7 +37,8 @@ venv/Scripts/python.exe scripts/stress_test.py                           # needs
 
 - Local venv is Python 3.13; the Docker image is Python 3.11. Keep code compatible with 3.11. Dev dependencies: `requirements-dev.txt`.
 - **Testing:** the fast tier replaces GLiNER2 with `FakeNER` (`tests/conftest.py`); register what it should detect with the `ner` fixture. The `upstream` fixture captures everything that would be sent to the LLM, so check it with `assert_no_leak`. Tests never call real LLM APIs.
-- **Known gaps are `xfail(strict=True)` tests.** When you fix one, remove its marker in the same PR (strict mode fails the run until you do). Never mark a newly failing test xfail to get a green run without the owner agreeing.
+- **Known gaps are `xfail(strict=True)` tests whose reason starts with the issue number** (e.g. `#4: …`). When you fix one, remove its marker in the same PR and write `Closes #N` in the PR body. Never mark a newly failing test xfail to get a green run without the owner agreeing.
+- **CI** (`.github/workflows/tests.yml`) runs both tiers on Python 3.11 for every PR. Both checks must pass before merging.
 - Map new tests to the promise they protect (P1–P10 in `docs/product.md`) and update that table.
 
 ## Gotchas
