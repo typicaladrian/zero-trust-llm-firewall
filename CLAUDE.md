@@ -20,7 +20,9 @@ main.py              Everything (for now): config, EntityVault redaction engine,
 evals/               benchmark.py (CUAD recall), verify_redaction.py, document_stress_test.py, fixtures/
 scripts/             prune_chats.sh, sync_vault.py, stress_test.py, multiturn_smoke_test.py
 assets/logo.png      PDF report branding
-docs/                Architecture, product, decision records
+tests/               pytest: fast tier (FakeNER) + tests/model/ (real GLiNER2)
+docs/                Architecture, product promises, decision records, workflow
+.claude/             Agent settings: permissions, hooks, subagents (planner, redaction-reviewer), skills
 private/             Gitignored local business notes (may not exist); never copy its contents into tracked files
 ```
 
@@ -44,7 +46,7 @@ venv/Scripts/python.exe scripts/stress_test.py                           # needs
 ## Gotchas
 
 - **Importing `main` loads the GLiNER2 model at import time** (slow; downloads weights on the first run). Scripts that `from main import EntityVault` pay this cost.
-- **Log and vault paths are hardcoded to `/app/logs/`** (the container volume). Running `main.py` directly on Windows writes to `C:\app\logs\`.
+- **Audit logs and the client vault live in `LOG_DIR`** (`AUDIT_LOG_DIR`, default `/app/logs`, the container volume). Running `main.py` directly on Windows without it writes to `C:\app\logs\`.
 - **Streaming is only enabled on `public-research-base`.** The zero-trust lane forces `stream=False` because de-anonymization needs the whole response.
 - **Placeholder format is `[LABEL_N]`**, e.g. `[PERSON_1]`. `internal_token_pattern` relies on it to avoid re-redacting tokens. Changing the format means changing both. Regex-layer labels keep their punctuation (`[ADDRESS_(US)_1]`, `[WEBSITE_/_URL_1]`).
 - **Model IDs in `/v1/models` must be valid LiteLLM model names**, except `elm-tech-auditor` and `public-research-base`, which are handled locally.
@@ -53,7 +55,9 @@ venv/Scripts/python.exe scripts/stress_test.py                           # needs
 
 ## Workflow
 
-- One issue → one branch (`feature/…`, `fix/…`, `docs/…`, `chore/…`) → one PR. Never commit to `main` directly.
+- **Every change follows [docs/workflow.md](docs/workflow.md)**: plan → owner approval → tests first → implement → `redaction-reviewer` → PR → owner merges. `/new-feature <idea>` and `/fix-issue <n>` run this loop.
+- **Guardrails in `.claude/settings.json`**: `.env` is unreadable (tools and shell). Pushing to `main` and force-pushing are blocked. Merging, releases and repo settings always ask the owner. A Stop hook won't let a turn end while the fast tier fails on changed code.
+- One issue → one branch (`feature/…`, `fix/…`, `docs/…`, `chore/…`) → one PR. Never commit to `main` directly (branch protection enforces it).
 - Commit subject style: `Type: Title Case Summary`, with Type one of Feature, Fix, Testing, Refactor, Security, Docs or Chore. Add a body when the why isn't obvious.
 - **No `Co-Authored-By` or "Generated with" lines** in commits or PRs (owner's preference).
 - PR descriptions include: summary, testing done (and what was *not* tested), eval numbers if redaction changed, deployment notes.
