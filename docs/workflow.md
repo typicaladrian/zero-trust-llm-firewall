@@ -21,10 +21,18 @@ The tree must be clean. If it isn't, stop and ask the owner what to do with the 
 
 ## 2. Track
 - New work: create an issue whose body is the approved plan: `gh issue create --title "…" --body-file <file> --label <bug|enhancement|security>`.
-- Existing issue: use it, and add the approved approach as a comment if it adds anything.
+- Existing issue: post the approved plan as a comment, including the owner's answers to its open questions: `gh issue comment <n> --body-file <file>`. The issue then records why the fix took the shape it did.
+- Read issues with `gh issue view <n> --json title,body,labels,comments`. The plain-text `--comments` view can print nothing.
 
-## 3. Branch
-`feature/<issue>-<slug>`, `fix/<issue>-<slug>`, `docs/…` or `chore/…`, cut from an up-to-date `main`.
+## 3. Baseline, then branch
+- **If the plan touches `EntityVault`, `PII_LABELS`, `REGEX_PATTERNS` or `STOPWORDS`, start the "before" benchmark now, before editing anything.** Run it from a throwaway worktree of `main`, so edits on your branch can't affect it, and keep it in the background (about 13 min):
+  ```bash
+  git fetch && git worktree add ../zt-baseline origin/main && mkdir -p evals/output
+  venv/Scripts/python.exe ../zt-baseline/evals/benchmark.py > evals/output/benchmark_before.txt 2>&1
+  git worktree remove ../zt-baseline   # after it finishes
+  ```
+  Timings are only comparable if nothing else heavy runs at the same time; recall numbers are always comparable.
+- Branch: `feature/<issue>-<slug>`, `fix/<issue>-<slug>`, `docs/…` or `chore/…`, cut from an up-to-date `main`.
 
 ## 4. Tests first
 - Write the tests from the plan. Run them and **confirm they fail for the reason the plan predicts.** A test that passes before the change proves nothing.
@@ -35,7 +43,7 @@ The tree must be clean. If it isn't, stop and ask the owner what to do with the 
 - Make the smallest change that turns the new tests green.
 - Fast tier: `venv/Scripts/python.exe -m pytest` (the Stop hook also enforces this).
 - Model tier, if entity detection could change: `ZT_REAL_MODEL=1 venv/Scripts/python.exe -m pytest -m model`.
-- If `EntityVault`, `PII_LABELS`, `REGEX_PATTERNS` or `STOPWORDS` changed: run `evals/benchmark.py` (about 13 min; run it in the background) and compare with the README table. **Recall must not drop.**
+- If `EntityVault`, `PII_LABELS`, `REGEX_PATTERNS` or `STOPWORDS` changed: run `evals/benchmark.py` again (the "after" run, in the background) and compare with the step 3 baseline. Put both recall numbers, and which entities leak in each, in the PR. **Recall must not drop.**
 - Update docs where behavior changed: the `docs/product.md` promise table, architecture, README, and a decision record for a significant design choice.
 
 ## 6. Review
