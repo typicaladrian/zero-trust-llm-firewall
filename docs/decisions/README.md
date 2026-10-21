@@ -30,3 +30,4 @@ Records 0001–0007 were reconstructed in October 2026 from the commit history a
 | [0006](0006-jsonl-audit-log-and-pdf-reports.md) | JSONL audit log + emailed PDF reports | Accepted |
 | [0007](0007-litellm-provider-routing.md) | LiteLLM for provider routing | Accepted |
 | [0008](0008-regex-overlap-union-merge.md) | Merge overlapping regex matches into their union | Accepted |
+| [0009](0009-always-send-placeholder-instructions.md) | Always send the placeholder instructions as their own system message | Accepted |
