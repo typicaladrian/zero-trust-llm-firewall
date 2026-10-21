@@ -127,7 +127,7 @@ docker-compose*.yml     Proxy + Open WebUI stack, dev override
 
 ## Roadmap
 
-- Extend redaction to system-role and multi-part (attachment) messages
+- Extend redaction to multi-part (attachment) messages
 - Keyed hashing (HMAC) for the client vault, and a tamper-evident audit log
 - Run the full CUAD benchmark on a schedule, with a minimum-recall threshold
 - Split `main.py` into modules (engine, routing, audit, reporting)

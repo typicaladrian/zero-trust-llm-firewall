@@ -147,7 +147,7 @@ STOPWORDS = {
 SYSTEM_PROMPT = {
     "role": "system",
     "content": (
-        "You are a helpful AI assistant. You will receive text containing redacted "
+        "You will receive text containing redacted "
         "placeholders in the format [ENTITY_TYPE_ID] (e.g., [PERSON_1], [CREDIT_CARD_NUMBER_1]). "
         "These placeholders represent pre-sanitized synthetic tokens. You MUST preserve and "
         "use these exact placeholders in your responses whenever referring to those entities. "
@@ -660,7 +660,8 @@ async def chat_completions(request: Request):
         for msg in messages:
             scrubbed_msg = msg.copy()
             
-            if "content" in scrubbed_msg and isinstance(scrubbed_msg["content"], str) and scrubbed_msg.get("role") != "system":
+            # Every role is redacted, system included: presets and injected context can hold client data
+            if "content" in scrubbed_msg and isinstance(scrubbed_msg["content"], str):
                 scrubbed_msg["content"] = await asyncio.to_thread(
                     vault.anonymize_text, 
                     scrubbed_msg["content"]
@@ -668,11 +669,10 @@ async def chat_completions(request: Request):
                 
             scrubbed_messages.append(scrubbed_msg)
 
-    # Skip adding the system PII prompt if unredacted
+    # Always send the placeholder instructions (never redacted), even next to a client system prompt.
+    # Skip them if unredacted
     if not is_unredacted:
-        has_system = any(m.get("role") == "system" for m in scrubbed_messages)
-        if not has_system:
-            scrubbed_messages.insert(0, SYSTEM_PROMPT)
+        scrubbed_messages.insert(0, dict(SYSTEM_PROMPT))
         
     elapsed_ms = round((time.time() - start_time) * 1000, 2)
     last_user_msg = next((m["content"] for m in reversed(scrubbed_messages) if m["role"] == "user"), "")

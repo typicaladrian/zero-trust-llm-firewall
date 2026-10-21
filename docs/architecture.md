@@ -36,8 +36,8 @@ The `model` field picks one of three lanes:
 Zero-trust lane, step by step:
 
 1. Create a fresh `EntityVault` for this request only.
-2. For each message with `role != "system"` and string `content`, run `vault.anonymize_text` in a worker thread.
-3. If the conversation has no system message, insert `SYSTEM_PROMPT`. It tells the model to keep `[LABEL_N]` placeholders intact.
+2. For each message with string `content`, whatever its role (system included), run `vault.anonymize_text` in a worker thread.
+3. Insert `SYSTEM_PROMPT` first, even when the client sent its own system message ([decision 0009](decisions/0009-always-send-placeholder-instructions.md)). It tells the model to keep `[LABEL_N]` placeholders intact and is never redacted.
 4. Resolve the user identity: the verified JWT email, then the Open WebUI headers, then `payload["user"]`.
 5. Call `litellm.completion` synchronously, then record the upstream token count.
 6. Write one audit line (metadata only).
