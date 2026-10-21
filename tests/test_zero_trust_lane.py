@@ -66,14 +66,17 @@ def test_system_message_content_is_redacted(chat, upstream):
     assert_no_leak(upstream.sent_text(), SECRETS)
 
 
-def test_placeholder_instructions_are_sent_alongside_client_system_prompt(chat, upstream):
+def test_placeholder_instructions_are_sent_alongside_client_system_prompt(chat, upstream, ner):
+    # "placeholders" also appears in SYSTEM_PROMPT, so this fails if the instructions get redacted.
+    ner.known["organization"].append("placeholders")
     chat([
-        {"role": "system", "content": "You assist the litigation team. The client is Jane Smith."},
+        {"role": "system", "content": "You assist the litigation team. The client is Jane Smith. Mind the placeholders."},
         {"role": "user", "content": PROMPT},
     ])
     sent = upstream.calls[0]["messages"]
 
-    assert sent[0] == main.SYSTEM_PROMPT  # decision 0009
+    assert "placeholders" not in sent[1]["content"]
+    assert sent[0] == main.SYSTEM_PROMPT  # decision 0009: inserted after redaction, never redacted
     assert sent[1]["role"] == "system"
     assert TOKEN.search(sent[1]["content"])
     assert_no_leak(sent[1]["content"], SECRETS)
@@ -97,7 +100,7 @@ def test_system_and_user_messages_share_placeholders(chat, upstream):
     assert response.json()["choices"][0]["message"]["content"] == "Draft a letter to Jane Smith."
 
 
-def test_redaction_round_trip_loses_no_context(chat, upstream, monkeypatch):
+def test_every_client_message_reaches_the_llm_in_order(chat, upstream, monkeypatch):
     vaults = []
 
     class RecordingVault(main.EntityVault):
@@ -116,8 +119,9 @@ def test_redaction_round_trip_loses_no_context(chat, upstream, monkeypatch):
     sent = upstream.calls[0]["messages"]
     assert_no_leak(upstream.sent_text(), SECRETS)
 
-    # Apart from the placeholder instructions, the LLM gets every client message, in order,
-    # and restoring the placeholders gives back exactly what the client sent.
+    # Apart from the placeholder instructions, the LLM gets every client message, in order, and
+    # restoring the placeholders gives back what the client sent. Entities appear in full form here:
+    # a partial reference ("Ms. Smith") is restored as the full name.
     assert sent[0] == main.SYSTEM_PROMPT
     restored = [{**m, "content": vaults[0].deanonymize_text(m["content"])} for m in sent[1:]]
     assert restored == messages
