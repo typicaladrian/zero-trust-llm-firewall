@@ -51,6 +51,7 @@ venv/Scripts/python.exe scripts/stress_test.py                           # needs
 - **Placeholder format is `[LABEL_N]`**, e.g. `[PERSON_1]`. `internal_token_pattern` relies on it to avoid re-redacting tokens. Changing the format means changing both. Regex-layer labels keep their punctuation (`[ADDRESS_(US)_1]`, `[WEBSITE_/_URL_1]`).
 - **Model IDs in `/v1/models` must be valid LiteLLM model names**, except `elm-tech-auditor` and `public-research-base`, which are handled locally.
 - Open WebUI sends background prompts (titles, tags, follow-ups). `write_audit_log` filters them out by phrase. Keep that list in sync if Open WebUI changes.
+- On Windows, `gh` may not be on PATH in agent shells. It installs to `C:\Program Files\GitHub CLI\gh.exe`. The owner-approval guard applies however `gh` is invoked.
 - `WEBUI_SECRET_KEY` must be identical for Open WebUI and the proxy, or every audit entry's user becomes `ERROR_INVALID_SIGNATURE`.
 
 ## Workflow
