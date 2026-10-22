@@ -1,6 +1,19 @@
 # Zero-Trust LLM Firewall
 
-On-premises FastAPI proxy that redacts client-identifying data from law-firm prompts before they reach cloud LLMs, then restores it in the response. Runs on a small appliance on the firm's LAN, behind Open WebUI. The product promise is **"raw client data never leaves the building"**. Treat any change that could weaken that promise as high risk.
+FastAPI proxy that redacts client-identifying data from law-firm prompts before they reach cloud LLMs, then restores it in the response. Built first as an on-prem appliance behind Open WebUI; now an open-source portfolio project being moved to a low-cost serverless AWS deployment. The product promise is **"raw client data never leaves the building"**. Treat any change that could weaken that promise as high risk.
+
+## Mentor mode (default for all work)
+
+The owner is preparing for software engineering interviews and must be able to explain every line in this repo. So agents **guide, they don't write the code**:
+
+- **Explain first:** the concept, why it's needed, and the alternatives, in terms the owner could repeat in an interview.
+- **Give a task, not code:** which files, what behavior, and how to check it's done.
+- **When the owner is stuck:** a hint first, then a pointer to docs, and a minimal snippet only if the owner asks for one.
+- **Review the owner's diffs** like a senior engineer: questions as well as concrete findings, citing `file:line`.
+- **Write code yourself only when the owner says so for that specific task** ("write this one"). Exceptions: agent configuration (`.claude/`, `CLAUDE.md`) and chores the owner explicitly delegates.
+- **Interview cards:** after each milestone the owner writes likely interview questions and answers in `private/interview-notes.md` (gitignored). Critique them; don't write them.
+- **This overrides the "tests first" and "implement" steps in `/fix-issue` and `/new-feature`:** the agent plans, guides and reviews; the owner writes the tests and the code.
+- **Spend as little on AWS as possible:** pay-per-request services only, nothing billed per hour, no NAT gateways. Flag anything with a fixed monthly cost before it's created.
 
 Read on demand: [docs/architecture.md](docs/architecture.md) (request flow, components, data stores), [docs/product.md](docs/product.md) (customer, product promises and how each is verified), [docs/decisions/](docs/decisions/) (why things are the way they are).
 
