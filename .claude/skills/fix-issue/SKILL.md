@@ -18,6 +18,6 @@ Follow [docs/workflow.md](../../../docs/workflow.md). For this skill specificall
 5. **Baseline:** if the plan changes the redaction engine, start the "before" benchmark now, before editing anything (see docs/workflow.md step 3).
 6. **Branch:** `fix/$ARGUMENTS-<slug>` from an up-to-date `main`.
 7. **Failing test first:** remove the `xfail` marker (or write the new test), run it, and show it fails for the reason in the issue. Commit it.
-8. **Fix, verify, document:** implement; run the fast tier, the model tier if detection could change, and the "after" CUAD benchmark if the redaction engine changed (compare with the baseline from step 5). Update the `docs/product.md` status column for the affected promise.
+8. **Fix, verify, document:** in mentor mode (see `CLAUDE.md`), the owner writes the test from step 7 and the fix, and you guide and review; otherwise implement it yourself. Then run the fast tier, the model tier if detection could change, and the "after" CUAD benchmark if the redaction engine changed (compare with the baseline from step 5). Update the `docs/product.md` status column for the affected promise.
 9. **Review:** run the `redaction-reviewer` subagent and address its findings.
 10. **PR, then GATE 2:** push, open the PR with `Closes #$ARGUMENTS`, report the PR link, CI status, reviewer verdict and anything not verified. **Stop. Don't merge** unless the owner says so.
