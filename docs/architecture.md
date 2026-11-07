@@ -92,4 +92,4 @@ Known gaps against these invariants are tracked as GitHub issues labelled `secur
 
 ## Configuration
 
-All settings come from environment variables, listed in [`.env.example`](../.env.example). Things that are still hardcoded in `main.py` and are candidates for configuration: `PII_LABELS`, `REGEX_PATTERNS`, `STOPWORDS`, the GLiNER threshold (0.30), the chunk size (400 words), the `PRICING` table, the model list in `/v1/models`, and `/app/logs` paths.
+All settings come from environment variables, listed in [`.env.example`](../.env.example). Things that are still hardcoded and are candidates for configuration: `PII_LABELS`, `REGEX_PATTERNS` and `STOPWORDS` (in `zt_firewall/redaction/patterns.py`); in `main.py`, the GLiNER threshold (0.30), the chunk size (400 words), the `PRICING` table, the model list in `/v1/models`, and `/app/logs` paths.
