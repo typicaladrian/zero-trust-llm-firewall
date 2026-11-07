@@ -8,7 +8,7 @@ Plan ──► GATE 1: owner approves ──► Branch ──► Tests first ─
 
 The owner (repository maintainer) makes the decisions at the two gates. Agents never skip a gate, and never treat silence as approval.
 
-**Mentor mode is the default** (`CLAUDE.md`): the agent plans, explains, guides and reviews, and the owner writes the tests and the code in steps 4–5. The agent writes code only when the owner asks for a specific task.
+**Working mode: explained implementation** (`CLAUDE.md`): agents write the tests and code, explain every phase and every change as they go, and the owner reviews each diff before Gate 2. When the owner says "I'll write this one", the agent guides and reviews instead.
 
 ## Which model does what
 Judgment goes to the strongest model; volume goes to the cheaper one.
