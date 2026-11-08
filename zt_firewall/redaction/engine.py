@@ -16,7 +16,6 @@ from zt_firewall.redaction.patterns import PII_LABELS, REGEX_PATTERNS, STOPWORDS
 CLIENT_HASH_VAULT = set()
 
 
-
 def generate_secure_hash(text: str) -> str:
     # Normalizes text (lowercases, strips punctuation) to ensure reliable hashing
     normalized = re.sub(r'[^a-z0-9]', '', text.lower())
