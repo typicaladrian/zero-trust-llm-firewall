@@ -173,6 +173,27 @@ def test_vault_file_contains_no_plaintext_names(client, isolated_state):
     assert all(re.fullmatch(r"[0-9a-f]{64}", h) for h in json.loads(stored))
 
 
+def test_a_second_sync_keeps_earlier_hashes_on_disk(client, isolated_state):
+    # Catches saving only the new names instead of the whole set (P3).
+    client.post("/v1/vault/sync", json={"names": ["Northbridge Capital"]})
+    client.post("/v1/vault/sync", json={"names": ["Halvorsen Shipping"]})
+    stored = set(json.loads((isolated_state / "client_hashes.json").read_text()))
+    assert stored == {engine.generate_secure_hash("Northbridge Capital"), engine.generate_secure_hash("Halvorsen Shipping")}
+
+
+def test_synced_names_are_still_redacted_after_a_restart(client):
+    # A restart empties memory; the startup load must restore the hashes from storage (P1, P3).
+    import main
+
+    client.post("/v1/vault/sync", json={"names": ["Northbridge Capital"]})
+    engine.CLIENT_HASH_VAULT.clear()  # simulate the process restarting
+
+    main.load_client_vault()
+
+    redacted = EntityVault().anonymize_text("We represent Northbridge Capital in the merger.")
+    assert_no_leak(redacted, ["Northbridge"])
+
+
 @pytest.mark.xfail(reason="#7: unsalted SHA-256 lets a guessed name be confirmed (P3, decision 0005)")
 def test_vault_hashes_cannot_be_confirmed_by_guessing_a_name(client, isolated_state):
     client.post("/v1/vault/sync", json={"names": ["Northbridge Capital"]})

@@ -71,3 +71,43 @@ def test_missing_secret_is_flagged_instead_of_trusting_the_jwt(chat, upstream, i
 
     chat([{"role": "user", "content": "hello"}], headers={"x-openwebui-user-jwt": token})
     assert read_audit_entries(isolated_state)[0]["user"] == "ERROR_NO_SECRET_CONFIGURED"
+
+
+# ---------------------------------------------------------------------------
+# Monthly report (P5): characterization tests pinning behavior across the storage refactor
+# ---------------------------------------------------------------------------
+
+def this_month():
+    return datetime.now().strftime("%Y_%m")
+
+
+def test_report_for_a_month_without_logs_is_404(client):
+    response = client.get("/v1/audit/report", params={"month": "1999_01"})
+    assert response.status_code == 404
+    assert response.json() == {"error": "No audit logs found for 1999_01."}
+
+
+def test_report_aggregates_the_month_with_newest_first(chat, upstream, client):
+    chat([{"role": "user", "content": SECRET_PROMPT}], headers={"x-openwebui-user-email": "first@firm.test"})
+    chat([{"role": "user", "content": "hello"}], headers={"x-openwebui-user-email": "second@firm.test"})
+
+    report = client.get("/v1/audit/report", params={"month": this_month()}).json()
+
+    assert report["executive_summary"]["total_prompts_processed"] == 2
+    assert report["executive_summary"]["total_cloud_tokens_used"] == 84
+    assert [row["user"] for row in report["transaction_ledger"]] == ["second@firm.test", "first@firm.test"]
+    assert report["roi_metrics"]["active_users"] == 2
+
+
+def test_report_on_a_corrupt_log_line_is_500(client, isolated_state):
+    (isolated_state / f"audit_{this_month()}.jsonl").write_text('{"user": "a@firm.test"}\nnot json\n')
+    response = client.get("/v1/audit/report", params={"month": this_month()})
+    assert response.status_code == 500
+    assert response.json()["error"].startswith("Failed to parse audit logs:")
+
+
+def test_report_for_an_empty_log_file_counts_zero(client, isolated_state):
+    (isolated_state / f"audit_{this_month()}.jsonl").write_text("")
+    response = client.get("/v1/audit/report", params={"month": this_month()})
+    assert response.status_code == 200
+    assert response.json()["executive_summary"]["total_prompts_processed"] == 0
