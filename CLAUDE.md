@@ -27,7 +27,9 @@ Read on demand: [docs/architecture.md](docs/architecture.md) (request flow, comp
 ## Repo map
 
 ```
-main.py              Everything (for now): config, EntityVault redaction engine, routes, audit, PDF reports
+main.py              App entry point, still holding most code: EntityVault, routes, audit, PDF reports (being split up, see #18)
+zt_firewall/         Application package; code moves here from main.py step by step (#18)
+  redaction/patterns.py   PII_LABELS, REGEX_PATTERNS, STOPWORDS
 evals/               benchmark.py (CUAD recall), verify_redaction.py, document_stress_test.py, fixtures/
 scripts/             prune_chats.sh, sync_vault.py, stress_test.py, multiturn_smoke_test.py
 assets/logo.png      PDF report branding
