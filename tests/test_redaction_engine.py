@@ -194,6 +194,27 @@ def test_synced_names_are_still_redacted_after_a_restart(client):
     assert_no_leak(redacted, ["Northbridge"])
 
 
+def test_app_startup_restores_the_client_vault(monkeypatch):
+    # Guards the startup wiring itself: if startup_routines stopped calling load_client_vault(),
+    # every synced client name would leak after a restart while the test above still passed (P1, P3).
+    import asyncio
+
+    import main
+    from zt_firewall.redaction import ner
+
+    async def idle():
+        return None
+
+    monkeypatch.setattr(ner, "get_model", lambda: None)                  # no model needed here
+    monkeypatch.setattr(main, "log_lifecycle_manager", idle)             # don't start the daily loop
+    monkeypatch.setattr(main, "automated_report_scheduler", idle)        # or the monthly one
+    main.STORAGE.save_client_hashes({engine.generate_secure_hash("Northbridge Capital")})
+
+    asyncio.run(main.startup_routines())
+
+    assert engine.generate_secure_hash("Northbridge Capital") in engine.CLIENT_HASH_VAULT
+
+
 @pytest.mark.xfail(reason="#7: unsalted SHA-256 lets a guessed name be confirmed (P3, decision 0005)")
 def test_vault_hashes_cannot_be_confirmed_by_guessing_a_name(client, isolated_state):
     client.post("/v1/vault/sync", json={"names": ["Northbridge Capital"]})

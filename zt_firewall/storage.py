@@ -21,7 +21,11 @@ class Storage(Protocol):
         """Append one metadata-only audit entry to the current month's log."""
 
     def read_audit_entries(self, month: str) -> list[dict] | None:
-        """Return the entries for month "YYYY_MM" in write order, or None if it has no log."""
+        """Return the entries for month "YYYY_MM" in write order, or None if it has no log.
+
+        Entries are returned as parsed, not validated; a malformed log raises or yields
+        non-dict values, and the report turns either into a 500.
+        """
 
     def load_client_hashes(self) -> set[str] | None:
         """Return the stored client hashes, or None if nothing has been stored."""

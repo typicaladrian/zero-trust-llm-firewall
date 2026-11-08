@@ -106,6 +106,12 @@ def test_report_on_a_corrupt_log_line_is_500(client, isolated_state):
     assert response.json()["error"].startswith("Failed to parse audit logs:")
 
 
+def test_report_on_a_line_that_is_not_an_object_is_500(client, isolated_state):
+    (isolated_state / f"audit_{this_month()}.jsonl").write_text('{"user": "a@firm.test"}\n[1]\n')
+    response = client.get("/v1/audit/report", params={"month": this_month()})
+    assert response.status_code == 500
+
+
 def test_report_for_an_empty_log_file_counts_zero(client, isolated_state):
     (isolated_state / f"audit_{this_month()}.jsonl").write_text("")
     response = client.get("/v1/audit/report", params={"month": this_month()})
