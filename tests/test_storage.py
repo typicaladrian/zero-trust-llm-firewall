@@ -59,6 +59,8 @@ def test_contract_appended_entries_read_back_in_order(backend):
 
 
 def test_contract_client_hashes_round_trip(backend):
+    assert backend.load_client_hashes() is None  # nothing stored yet (distinct from an empty set)
+    backend.save_client_hashes(set())
     assert backend.load_client_hashes() == set()
     backend.save_client_hashes({HASH_A, HASH_B})
     assert backend.load_client_hashes() == {HASH_A, HASH_B}
@@ -104,14 +106,15 @@ def test_local_backend_writes_only_inside_its_root(tmp_path):
 
 def test_local_retention_gzips_past_months_and_keeps_the_current_one(tmp_path):
     old = tmp_path / "audit_2001_01.jsonl"
-    old.write_text(json.dumps(ENTRY) + "\n")
+    old_bytes = (json.dumps(ENTRY) + "\n").encode()
+    old.write_bytes(old_bytes)  # bytes, not text: text mode would write "\r\n" on Windows
     store = LocalFileStorage(str(tmp_path))
     store.append_audit_entry(ENTRY)
 
     store.enforce_retention()
 
     assert not old.exists()
-    assert gzip.decompress((tmp_path / "audit_2001_01.jsonl.gz").read_bytes()).decode() == json.dumps(ENTRY) + "\n"
+    assert gzip.decompress((tmp_path / "audit_2001_01.jsonl.gz").read_bytes()) == old_bytes  # byte-exact archive
     assert (tmp_path / f"audit_{this_month()}.jsonl").exists()
 
 

@@ -24,7 +24,7 @@ sys.path.insert(0, str(ROOT))
 
 REAL_MODEL = os.getenv("ZT_REAL_MODEL") == "1"
 
-# main.py reads AUDIT_LOG_DIR at import time; never let tests touch a real log directory.
+# main.py builds STORAGE from AUDIT_LOG_DIR at import time; never let it point at a real log directory.
 os.environ.setdefault("AUDIT_LOG_DIR", tempfile.mkdtemp(prefix="zt-test-logs-"))
 
 
@@ -53,6 +53,7 @@ if not REAL_MODEL:
 
 import main  # noqa: E402  (after the fake model is installed, before anything calls ner.get_model)
 from zt_firewall.redaction import engine  # noqa: E402
+from zt_firewall.storage import LocalFileStorage  # noqa: E402
 
 
 def pytest_collection_modifyitems(config, items):
@@ -74,8 +75,8 @@ def pytest_collection_modifyitems(config, items):
 
 @pytest.fixture(autouse=True)
 def isolated_state(tmp_path, monkeypatch):
-    monkeypatch.setattr(main, "LOG_DIR", str(tmp_path))
-    monkeypatch.setattr(main, "VAULT_FILE", str(tmp_path / "client_hashes.json"))
+    # A fresh local backend per test, in this test's own temp folder (main reads main.STORAGE at call time)
+    monkeypatch.setattr(main, "STORAGE", LocalFileStorage(str(tmp_path)))
     engine.CLIENT_HASH_VAULT.clear()
     FAKE_NER.known = {}
     yield tmp_path

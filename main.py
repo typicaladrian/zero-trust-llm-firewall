@@ -39,6 +39,7 @@ from zt_firewall.redaction import ner
 # Re-exported while main.py is split up (#18). EntityVault reads these from the engine module,
 # so tests must patch zt_firewall.redaction.engine, not main, to change its behavior.
 from zt_firewall.redaction.engine import CLIENT_HASH_VAULT, EntityVault, chunk_text, generate_secure_hash
+from zt_firewall.storage import storage_from_env
 
 # ---------------------------------------------------------
 # 1. Global Configurations & Model Initialization
@@ -68,34 +69,15 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Persistent data directory (Docker volume in production; overridable for tests)
-LOG_DIR = os.getenv("AUDIT_LOG_DIR", "/app/logs")
-VAULT_FILE = os.path.join(LOG_DIR, "client_hashes.json")
+# Audit log and client-hash persistence (decision 0011). Local files by default; tests replace
+# main.STORAGE per test. Always reach it through this module so a test's swap takes effect.
+STORAGE = storage_from_env()
 
 async def log_lifecycle_manager():
-    """Runs continuously in the background to compress old logs and prune >90 days."""
+    """Runs continuously in the background, applying the audit log retention policy daily."""
     while True:
         try:
-            log_dir = LOG_DIR
-            os.makedirs(log_dir, exist_ok=True)
-            current_month = datetime.now().strftime("%Y_%m")
-            
-            # 1. Compress previous months' active JSONL files
-            for filepath in glob.glob(f"{log_dir}/audit_*.jsonl"):
-                filename = os.path.basename(filepath)
-                # If the file doesn't match the current month, it's old. Zip it!
-                if current_month not in filename: 
-                    with open(filepath, 'rb') as f_in:
-                        with gzip.open(f"{filepath}.gz", 'wb') as f_out:
-                            shutil.copyfileobj(f_in, f_out)
-                    os.remove(filepath) # Delete the uncompressed legacy file
-                    
-            # 2. Prune archives older than 90 days
-            cutoff_time = time.time() - (90 * 86400) # 90 days in seconds
-            for filepath in glob.glob(f"{log_dir}/audit_*.gz"):
-                if os.path.getmtime(filepath) < cutoff_time:
-                    os.remove(filepath)
-                    
+            STORAGE.enforce_retention()
         except Exception as e:
             print(f"Log manager encountered an error: {e}")
             
@@ -197,11 +179,14 @@ async def startup_routines():
     # Trigger the monthly PDF automated delivery scheduler
     asyncio.create_task(automated_report_scheduler())
     
-    # Existing vault load logic
-    if os.path.exists(VAULT_FILE):
-        with open(VAULT_FILE, "r") as f:
-            hashes = json.load(f)
-            CLIENT_HASH_VAULT.update(hashes)
+    load_client_vault()
+
+
+def load_client_vault():
+    """Restore the hashed client list from storage into memory (at startup)."""
+    hashes = STORAGE.load_client_hashes()
+    if hashes is not None:
+        CLIENT_HASH_VAULT.update(hashes)  # update in place: the engine shares this set
         print(f"Loaded {len(CLIENT_HASH_VAULT)} client hashes into ephemeral RAM.")
 
 # -------------------------------------------------
@@ -216,9 +201,8 @@ async def sync_client_vault(payload: ClientList):
     new_hashes = {generate_secure_hash(name) for name in payload.names}
     CLIENT_HASH_VAULT.update(new_hashes)
     
-    # Save ONLY the hashes to the physical disk
-    with open(VAULT_FILE, "w") as f:
-        json.dump(list(CLIENT_HASH_VAULT), f)
+    # Persist ONLY the hashes (the whole set, not just the new ones)
+    STORAGE.save_client_hashes(CLIENT_HASH_VAULT)
         
     return {
         "status": "success", 
@@ -364,12 +348,7 @@ async def chat_completions(request: Request):
         is_background_task = any(phrase in last_user_msg for phrase in ignore_phrases)
         
         if not is_background_task:
-            os.makedirs(LOG_DIR, exist_ok=True)
-            current_month = datetime.now().strftime("%Y_%m")
-            log_path = os.path.join(LOG_DIR, f"audit_{current_month}.jsonl")
-            
-            with open(log_path, "a") as f:
-                f.write(json.dumps(audit_entry) + "\n")
+            STORAGE.append_audit_entry(audit_entry)
 
     if model == "elm-tech-auditor":
         await asyncio.to_thread(write_audit_log) 
@@ -463,11 +442,6 @@ async def generate_audit_report(month: str = None):
     if not month:
         month = datetime.now().strftime("%Y_%m")
         
-    log_path = os.path.join(LOG_DIR, f"audit_{month}.jsonl")
-    
-    if not os.path.exists(log_path):
-        return JSONResponse(status_code=404, content={"error": f"No audit logs found for {month}."})
-        
     total_prompts = 0
     total_threats = 0
     total_latency = 0
@@ -492,44 +466,43 @@ async def generate_audit_report(month: str = None):
     FLAGSHIP_RATE = PRICING["claude-opus-5"]
     
     try:
-        with open(log_path, "r") as f:
-            for line in f:
-                if not line.strip():
-                    continue
-                    
-                entry = json.loads(line)
-                total_prompts += 1
-                total_threats += entry.get("tokens_anonymized", 0)
-                total_latency += entry.get("latency_ms", 0)
+        entries = STORAGE.read_audit_entries(month)
+        if entries is None:
+            return JSONResponse(status_code=404, content={"error": f"No audit logs found for {month}."})
+
+        for entry in entries:
+            total_prompts += 1
+            total_threats += entry.get("tokens_anonymized", 0)
+            total_latency += entry.get("latency_ms", 0)
+            
+            tokens = entry.get("upstream_tokens", 0)
+            total_upstream_tokens += tokens
+            total_payload_volume += entry.get("payload_char_count", 0)
+            
+            model = entry.get("model", "unknown")
+            user = entry.get("user", "unknown")
+            
+            model_usage[model] += 1
+            unique_users.add(user)
+            
+            # Calculate Financials
+            total_actual_cost += (tokens * PRICING.get(model, PRICING["gpt-4o-mini"]))
+            total_unoptimized_cost += (tokens * FLAGSHIP_RATE)
+            
+            breakdown = entry.get("entity_breakdown", {})
+            for entity_type, count in breakdown.items():
+                aggregated_threats[entity_type] += count
+            
+            transaction_ledger.append({
+                "timestamp": entry.get("timestamp"),
+                "user": user,
+                "model": model,
+                "latency_ms": entry.get("latency_ms"),
+                "payload_size": entry.get("payload_char_count"),
+                "threats_intercepted": entry.get("tokens_anonymized"),
+                "entities": breakdown
+            })
                 
-                tokens = entry.get("upstream_tokens", 0)
-                total_upstream_tokens += tokens
-                total_payload_volume += entry.get("payload_char_count", 0)
-                
-                model = entry.get("model", "unknown")
-                user = entry.get("user", "unknown")
-                
-                model_usage[model] += 1
-                unique_users.add(user)
-                
-                # Calculate Financials
-                total_actual_cost += (tokens * PRICING.get(model, PRICING["gpt-4o-mini"]))
-                total_unoptimized_cost += (tokens * FLAGSHIP_RATE)
-                
-                breakdown = entry.get("entity_breakdown", {})
-                for entity_type, count in breakdown.items():
-                    aggregated_threats[entity_type] += count
-                
-                transaction_ledger.append({
-                    "timestamp": entry.get("timestamp"),
-                    "user": user,
-                    "model": model,
-                    "latency_ms": entry.get("latency_ms"),
-                    "payload_size": entry.get("payload_char_count"),
-                    "threats_intercepted": entry.get("tokens_anonymized"),
-                    "entities": breakdown
-                })
-                    
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": f"Failed to parse audit logs: {str(e)}"})
         
