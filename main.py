@@ -29,16 +29,10 @@ from reportlab.graphics.charts.barcharts import HorizontalBarChart
 from reportlab.graphics.charts.textlabels import Label
 from reportlab.lib.validators import Auto
 
-
-import glob
-import gzip
-import shutil
-
-from zt_firewall.redaction.patterns import PII_LABELS, REGEX_PATTERNS, STOPWORDS
 from zt_firewall.redaction import ner
-# Re-exported while main.py is split up (#18). EntityVault reads these from the engine module,
-# so tests must patch zt_firewall.redaction.engine, not main, to change its behavior.
-from zt_firewall.redaction.engine import CLIENT_HASH_VAULT, EntityVault, chunk_text, generate_secure_hash
+# Tests patch main.EntityVault (looked up here at request time); to change how redaction itself
+# behaves, patch zt_firewall.redaction.engine, where EntityVault reads its rules.
+from zt_firewall.redaction.engine import CLIENT_HASH_VAULT, EntityVault, generate_secure_hash
 from zt_firewall.storage import storage_from_env
 
 # ---------------------------------------------------------
