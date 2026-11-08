@@ -18,6 +18,7 @@ import zt_firewall.redaction.engine
 from zt_firewall.redaction import ner
 
 assert "gliner2" not in sys.modules, "importing the engine imported gliner2"
+assert "torch" not in sys.modules, "importing the engine imported PyTorch"
 assert "main" not in sys.modules, "the engine imports main (circular dependency)"
 assert ner.get_model.cache_info().currsize == 0, "the model was loaded at import time"
 print("ok")

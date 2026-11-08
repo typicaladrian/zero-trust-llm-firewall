@@ -7,6 +7,7 @@ import pytest
 
 import main
 from helpers import TOKEN, assert_no_leak
+from zt_firewall.redaction import ner
 
 SECRETS = ["Jane Smith", "Acme Robotics", "123-45-6789"]
 PROMPT = "Draft a demand letter from Jane Smith (SSN 123-45-6789) to Acme Robotics."
@@ -51,6 +52,20 @@ def test_llm_reply_is_restored_to_plaintext_for_the_user(chat, upstream):
 
     assert content == PROMPT
     assert not TOKEN.search(content)
+
+
+def test_model_failure_blocks_the_request_instead_of_sending_it_unredacted(chat, upstream, monkeypatch):
+    # The model now loads on first use (decision 0010). If loading fails mid-request, the
+    # request must fail closed: an error, and nothing sent upstream. Guards against a future
+    # "fall back to the raw text" try/except around redaction.
+    def model_unavailable():
+        raise RuntimeError("GLiNER2 model failed to load")
+
+    monkeypatch.setattr(ner, "get_model", model_unavailable)
+
+    with pytest.raises(RuntimeError, match="failed to load"):
+        chat([{"role": "user", "content": PROMPT}])
+    assert upstream.calls == []
 
 
 def test_zero_trust_lane_never_streams(chat, upstream):
