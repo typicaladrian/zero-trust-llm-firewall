@@ -16,4 +16,4 @@ Use GLiNER2 zero-shot entity extraction on CPU, with labels supplied at runtime 
 - New entity types can be added by editing a label list, with no retraining.
 - Runs fully offline on the appliance's CPU. Weights are baked into the Docker image.
 - The low threshold favors recall over precision, so false positives are handled with `STOPWORDS`.
-- Loading the model happens at import time, which slows startup and any script that imports `main`.
+- Loading the model happened at import time, which slowed startup and any script that imported `main`. Superseded by [0010](0010-lazy-ner-loading-with-startup-warmup.md): it now loads on first use and is warmed at app startup.

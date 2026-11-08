@@ -1,6 +1,6 @@
 # Architecture
 
-How the proxy works today. All application code lives in `main.py`. Components below are named by function or class so this stays accurate as line numbers change.
+How the proxy works today. Application code lives in `main.py` and the `zt_firewall` package (redaction in `zt_firewall/redaction/`), being split up step by step (#18). Components below are named by function or class so this stays accurate as line numbers change.
 
 ## Deployment
 
@@ -21,7 +21,7 @@ flowchart LR
 - The proxy port is bound to `127.0.0.1` on the host, so LAN users can only reach it through Open WebUI. Open WebUI is exposed on `:3000`.
 - Open WebUI is configured with `OPENAI_API_BASE_URL=http://zero-trust-proxy:8000/v1`, so it treats the proxy as an OpenAI endpoint.
 - Both containers share `WEBUI_SECRET_KEY` from `.env`. Open WebUI signs a per-user JWT (`x-openwebui-user-jwt`), and the proxy verifies it to attribute audit entries.
-- The GLiNER2 model (`fastino/gliner2-privacy-filter-PII-multi`) is downloaded at image build time and runs on CPU. Redaction needs no internet access.
+- The GLiNER2 model (`fastino/gliner2-privacy-filter-PII-multi`) is downloaded at image build time and runs on CPU. Redaction needs no internet access. The app loads it at startup, before serving; importing the redaction engine alone does not load it ([decision 0010](decisions/0010-lazy-ner-loading-with-startup-warmup.md)).
 
 ## Request lifecycle: `POST /v1/chat/completions`
 
@@ -92,4 +92,4 @@ Known gaps against these invariants are tracked as GitHub issues labelled `secur
 
 ## Configuration
 
-All settings come from environment variables, listed in [`.env.example`](../.env.example). Things that are still hardcoded and are candidates for configuration: `PII_LABELS`, `REGEX_PATTERNS` and `STOPWORDS` (in `zt_firewall/redaction/patterns.py`); in `main.py`, the GLiNER threshold (0.30), the chunk size (400 words), the `PRICING` table, the model list in `/v1/models`, and `/app/logs` paths.
+All settings come from environment variables, listed in [`.env.example`](../.env.example). Things that are still hardcoded and are candidates for configuration: `PII_LABELS`, `REGEX_PATTERNS` and `STOPWORDS` (in `zt_firewall/redaction/patterns.py`); in `zt_firewall/redaction/engine.py`, the GLiNER threshold (0.30) and the chunk size (400 words); in `main.py`, the `PRICING` table, the model list in `/v1/models`, and `/app/logs` paths.

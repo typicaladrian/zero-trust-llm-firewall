@@ -116,7 +116,8 @@ Scoring is deliberately strict: if any two-word fragment of a multi-word entity 
 ## Project structure
 
 ```
-main.py                 FastAPI proxy: redaction engine, routing, audit, reporting
+main.py                 FastAPI app: routing, audit, reporting (being split into zt_firewall/)
+zt_firewall/redaction/  Redaction engine (EntityVault), rules, and lazily loaded GLiNER2 model
 tests/                  pytest suite: fast tier + model tier (tests/model/)
 evals/                  Redaction benchmarks + CUAD fixtures (outputs → evals/output/, gitignored)
 scripts/                Ops utilities: chat pruning, vault sync, smoke and stress tests
