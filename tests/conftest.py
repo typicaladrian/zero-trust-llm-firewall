@@ -2,8 +2,9 @@
 
 Two tiers:
 - Fast tier (default, `pytest`): GLiNER2 is replaced by FakeNER, which "detects"
-  exactly the entities a test registers. Everything else in main.py runs for real.
-  No model download, runs in seconds.
+  exactly the entities a test registers. Everything else runs for real.
+  No model download, runs in seconds. The fake works because ner.get_model() imports
+  gliner2 only on first use, after this file has installed the fake module.
 - Model tier (`ZT_REAL_MODEL=1 pytest -m model`): loads the real GLiNER2 model and
   runs only tests marked `model`.
 """
@@ -50,7 +51,8 @@ if not REAL_MODEL:
     fake_gliner2.GLiNER2 = SimpleNamespace(from_pretrained=lambda name: FAKE_NER)
     sys.modules["gliner2"] = fake_gliner2
 
-import main  # noqa: E402  (must come after the fake model is installed)
+import main  # noqa: E402  (after the fake model is installed, before anything calls ner.get_model)
+from zt_firewall.redaction import engine  # noqa: E402
 
 
 def pytest_collection_modifyitems(config, items):
@@ -74,10 +76,10 @@ def pytest_collection_modifyitems(config, items):
 def isolated_state(tmp_path, monkeypatch):
     monkeypatch.setattr(main, "LOG_DIR", str(tmp_path))
     monkeypatch.setattr(main, "VAULT_FILE", str(tmp_path / "client_hashes.json"))
-    main.CLIENT_HASH_VAULT.clear()
+    engine.CLIENT_HASH_VAULT.clear()
     FAKE_NER.known = {}
     yield tmp_path
-    main.CLIENT_HASH_VAULT.clear()
+    engine.CLIENT_HASH_VAULT.clear()
     FAKE_NER.known = {}
 
 

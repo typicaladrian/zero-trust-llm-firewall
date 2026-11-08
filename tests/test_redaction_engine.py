@@ -8,9 +8,9 @@ import re
 
 import pytest
 
-import main
+from zt_firewall.redaction import engine
 from helpers import TOKEN, assert_no_leak
-from main import EntityVault
+from zt_firewall.redaction.engine import EntityVault
 
 
 # ---------------------------------------------------------------------------
@@ -58,7 +58,7 @@ def test_regex_match_nested_inside_another_is_redacted_once():
 
 def test_partially_overlapping_regex_matches_are_merged(monkeypatch):
     # Neither span covers the other, so keeping only one would leak the other's tail
-    monkeypatch.setattr(main, "REGEX_PATTERNS", {"Alpha": r"AAA BBB", "Beta": r"BBB CCC"})
+    monkeypatch.setattr(engine, "REGEX_PATTERNS", {"Alpha": r"AAA BBB", "Beta": r"BBB CCC"})
     text = "Ref AAA BBB CCC end."
     vault = EntityVault()
     redacted = vault.anonymize_text(text)
@@ -68,7 +68,7 @@ def test_partially_overlapping_regex_matches_are_merged(monkeypatch):
 
 
 def test_same_span_matches_yield_one_token_with_the_first_pattern_label(monkeypatch):
-    monkeypatch.setattr(main, "REGEX_PATTERNS", {"Alpha": r"AAA BBB", "Beta": r"AAA BBB"})
+    monkeypatch.setattr(engine, "REGEX_PATTERNS", {"Alpha": r"AAA BBB", "Beta": r"AAA BBB"})
     text = "Ref AAA BBB end."
     vault = EntityVault()
     redacted = vault.anonymize_text(text)
@@ -90,7 +90,7 @@ def test_adjacent_regex_matches_stay_separate():
 
 def test_touching_regex_matches_stay_separate(monkeypatch):
     # One span ends exactly where the next begins: that is not an overlap
-    monkeypatch.setattr(main, "REGEX_PATTERNS", {"Alpha": r"AAA", "Beta": r"BBB"})
+    monkeypatch.setattr(engine, "REGEX_PATTERNS", {"Alpha": r"AAA", "Beta": r"BBB"})
     text = "Ref AAABBB end."
     vault = EntityVault()
     redacted = vault.anonymize_text(text)

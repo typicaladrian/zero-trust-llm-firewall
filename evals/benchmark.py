@@ -6,9 +6,11 @@ import sys
 from pathlib import Path
 
 EVALS_DIR = Path(__file__).resolve().parent
-sys.path.insert(0, str(EVALS_DIR.parent))  # make main.py importable from any working directory
+sys.path.insert(0, str(EVALS_DIR.parent))  # make the zt_firewall package importable from any working directory
 
-from main import EntityVault, STOPWORDS
+from zt_firewall.redaction import ner
+from zt_firewall.redaction.engine import EntityVault
+from zt_firewall.redaction.patterns import STOPWORDS
 
 FIXTURES_DIR = EVALS_DIR / "fixtures" / "cuad"
 OUTPUT_DIR = EVALS_DIR / "output"
@@ -138,7 +140,10 @@ if __name__ == "__main__":
             "out_path": OUTPUT_DIR / "cuad_5_redacted.txt"
         }
     ]
-    
+
+    # Load the model before timing anything; otherwise contract #1's latency includes the load.
+    ner.get_model()
+
     for test in test_suite:
         print(f"\n\n{'*'*60}")
         print(f"🚀 RUNNING BENCHMARK: {test['name']}")

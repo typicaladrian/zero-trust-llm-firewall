@@ -6,7 +6,7 @@ All names, numbers and cases below are fictional.
 import pytest
 
 from helpers import assert_no_leak
-from main import EntityVault
+from zt_firewall.redaction.engine import EntityVault
 
 pytestmark = pytest.mark.model
 
