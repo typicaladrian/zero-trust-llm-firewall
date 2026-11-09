@@ -72,3 +72,21 @@ jobs:
         env:
           ZT_REAL_MODEL: "1"
         run: pytest -m model
+
+  container:
+    name: Container image (Lambda-ready)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      # The runner has about 14 GB free; the build needs the image (under 10 GB) plus layers.
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
+          df -h /
+
+      # Same commands as a local run: build (--provenance=false), size < 10 GB, .dockerignore
+      # probe, then run read-only / non-root / no network and smoke-test redaction offline.
+      - name: Build and check the image
+        run: bash scripts/container_check.sh
