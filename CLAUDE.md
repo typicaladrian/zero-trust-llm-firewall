@@ -74,7 +74,7 @@ venv/Scripts/python.exe scripts/stress_test.py                           # needs
 ## Workflow
 
 - **Every change follows [docs/workflow.md](docs/workflow.md)**: plan → owner approval → tests first → implement → `redaction-reviewer` → PR → owner merges. `/new-feature <idea>` and `/fix-issue <n>` run this loop. Implementation runs on Sonnet (repo default); the `planner` and `redaction-reviewer` subagents run on Opus.
-- **Guardrails in `.claude/settings.json`**: `.env` is unreadable (tools and shell). Pushing to `main` and force-pushing are blocked. Merging, releases and repo settings always ask the owner. A Stop hook won't let a turn end while the fast tier fails on changed code.
+- **Guardrails in `.claude/settings.json`**: `.env` is unreadable (tools and shell). Pushing to `main` and force-pushing are blocked. Merging, releases and repo settings always ask the owner. So do `terraform apply/destroy/import`, state edits, AWS commands that change anything, and `docker push` (see the infrastructure gate in `docs/workflow.md`). Reading secrets is denied: Terraform state and tfvars, `~/.aws`, decrypted SSM/Secrets Manager values, `terraform output -json/-raw`. A Stop hook won't let a turn end while the fast tier fails on changed code.
 - One issue → one branch (`feature/…`, `fix/…`, `docs/…`, `chore/…`) → one PR. Never commit to `main` directly (branch protection enforces it).
 - Commit subject style: `Type: Title Case Summary`, with Type one of Feature, Fix, Testing, Refactor, Security, Docs or Chore. Add a body when the why isn't obvious.
 - **No `Co-Authored-By` or "Generated with" lines** in commits or PRs (owner's preference).
