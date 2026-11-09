@@ -231,3 +231,48 @@ def test_powershell_tool_is_guarded_too():
     settings = json.loads((HOOK.parent.parent / "settings.json").read_text())
     matchers = [entry["matcher"] for entry in settings["hooks"]["PreToolUse"]]
     assert any("PowerShell" in m.split("|") and "Bash" in m.split("|") for m in matchers)
+
+
+HEREDOC_COMMIT = 'git commit -m "$(cat <<\'EOF\'\nDocs: Explain why .env is never read and when terraform apply needs approval\n\nBody mentions aws ssm get-parameter --with-decryption too.\nEOF\n)"'
+# ---------------------------------------------------------------------------
+# Round 2 of the adversarial review (#26): quoted command strings with separators
+# inside, $(...) captured into variables, process substitution, quote-boundary tricks,
+# and false positives that would block everyday work.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("command", [
+    'sh -c "terraform output -json | jq ."',
+    "URL=$(terraform output -raw function_url)",
+    "diff <(terraform output -json) old.json",
+    "docker compose config && git status -q",
+    f"""echo "a -m 'b" ; cat {DOT} ; echo "c' d\"""",
+])
+def test_round2_bypasses_of_secret_rules_are_denied(command):
+    assert decision(command) == "deny"
+
+
+@pytest.mark.parametrize("command", [
+    'bash -c "cd infra && terraform apply"',
+    'pwsh -c "cd infra; terraform apply"',
+    """pwsh -c "& 'C:\\Program Files\\Amazon\\AWSCLIV2\\aws.exe' s3 rm s3://b/k\"""",
+    "x=$(terraform apply -auto-approve)",
+    "docker compose build --push",
+    "watch -t 'terraform apply'",
+    "bash -c 'terraform\tapply'",
+])
+def test_round2_bypasses_of_owner_gates_ask(command):
+    assert decision(command) == "ask"
+
+
+@pytest.mark.parametrize("command", [
+    HEREDOC_COMMIT,
+    "cat infra/terraform.tfvars.example",
+    "aws iam list-access-keys --user-name ci",
+    "aws iam get-access-key-last-used --access-key-id AKIAEXAMPLE",
+    "aws sts get-access-key-info --access-key-id AKIAEXAMPLE",
+    "aws iam get-credential-report",
+    "terraform plan -out tfplan 2>&1 | tail -20",
+    'curl -s "https://example.com/?a=1&b=2"',
+])
+def test_round2_false_positives_are_allowed(command):
+    assert decision(command) == "allow"
