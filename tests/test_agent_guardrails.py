@@ -65,3 +65,86 @@ def test_owner_gated_github_actions_ask_the_owner(command):
 ])
 def test_everyday_commands_are_allowed(command):
     assert decision(command) == "allow"
+
+
+# ---------------------------------------------------------------------------
+# AWS, Terraform and Docker (Milestone 3, #26)
+# Infrastructure changes and image pushes need the owner; reading secrets, Terraform state,
+# tfvars or local AWS credentials is never allowed, however the binary is spelled.
+# ---------------------------------------------------------------------------
+
+AWS = '"C:\Program Files\Amazon\AWSCLIV2\aws.exe"'
+STATE = "terraform" + ".tfstate"
+
+
+@pytest.mark.parametrize("command", [
+    "aws ssm get-parameter --name /zt/key --with-decryption",
+    "aws ssm get-parameters-by-path --path /zt --with-decryption --recursive",
+    "aws secretsmanager get-secret-value --secret-id zt/key",
+    "aws configure export-credentials --format env",
+    f"{AWS} configure export-credentials",
+    "terraform state pull",
+    "terraform -chdir=infra/live output -json",
+    "terraform output -raw function_url",
+    "terraform show -json",
+    "terraform console",
+    f"cat infra/live/{STATE}",
+    f"type infra\live\{STATE}.backup",
+    "cat infra/live/prod.tfvars",
+    "cat ~/.aws/credentials",
+    "ls ~/.aws/login/cache",
+])
+def test_secret_and_state_access_is_denied(command):
+    assert decision(command) == "deny"
+
+
+@pytest.mark.parametrize("command", [
+    "terraform apply",
+    "terraform -chdir=infra/live apply tfplan",
+    "terraform destroy -auto-approve",
+    "tofu apply",
+    "terraform import aws_s3_bucket.state zt-tfstate",
+    "terraform state rm aws_lambda_function.proxy",
+    "terraform force-unlock 1234",
+    "aws lambda update-function-code --function-name zt-proxy --image-uri x",
+    "aws --region us-east-1 s3 mb s3://zt-tfstate",
+    "aws s3 cp evals/output/report.txt s3://bucket/",
+    "aws s3 rm s3://bucket/key",
+    "aws lambda invoke --function-name zt-proxy out.json",
+    "aws iam create-role --role-name x --assume-role-policy-document file://p.json",
+    f"{AWS} ecr delete-repository --repository-name zt",
+    "/c/Program\ Files/Amazon/AWSCLIV2/aws.exe budgets create-budget --account-id 1 --budget file://b.json",
+    "docker push 123.dkr.ecr.us-east-1.amazonaws.com/zt:abc",
+    "docker image push zt:abc",
+    "docker buildx build --platform linux/amd64 --push -t zt:abc .",
+    "terraform plan -out tfplan && terraform apply tfplan",
+])
+def test_infrastructure_changes_ask_the_owner(command):
+    assert decision(command) == "ask"
+
+
+@pytest.mark.parametrize("command", [
+    "aws login",
+    "aws sts get-caller-identity",
+    "aws --profile default lambda get-function --function-name zt-proxy",
+    "aws ecr describe-images --repository-name zt",
+    "aws lambda list-functions --region us-east-1",
+    "aws logs tail /aws/lambda/zt-proxy --since 10m",
+    "aws s3 ls s3://zt-tfstate",
+    "aws ssm get-parameter --name /zt/region",
+    "aws configure set region us-east-1",
+    "aws configure list",
+    f"{AWS} --version",
+    "terraform init",
+    "terraform -chdir=infra/live plan -out tfplan",
+    "terraform validate",
+    "terraform fmt -check -recursive infra",
+    "terraform output",
+    "terraform state list",
+    "docker build -t zt:abc .",
+    "docker images",
+    "git commit -m 'Docs: explain when terraform apply needs approval'",
+    "git add .gitignore infra/live/main.tf",
+])
+def test_everyday_infrastructure_commands_are_allowed(command):
+    assert decision(command) == "allow"
