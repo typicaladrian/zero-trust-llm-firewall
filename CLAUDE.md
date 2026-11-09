@@ -27,11 +27,12 @@ Read on demand: [docs/architecture.md](docs/architecture.md) (request flow, comp
 ## Repo map
 
 ```
-main.py              App entry point, still holding routes, audit and PDF reports (being split up, see #18)
-zt_firewall/         Application package; code moves here from main.py step by step (#18)
+main.py              App entry point: routes, audit entry building, reports, PDF and email
+zt_firewall/         Application package (redaction engine, storage)
   redaction/patterns.py   PII_LABELS, REGEX_PATTERNS, STOPWORDS
   redaction/engine.py     EntityVault, chunk_text, in-memory client hash set
   redaction/ner.py        GLiNER2 model, loaded once on first use (get_model)
+  storage.py              Storage protocol + LocalFileStorage: audit log, client hash file, retention
 evals/               benchmark.py (CUAD recall), verify_redaction.py, document_stress_test.py, fixtures/
 scripts/             prune_chats.sh, sync_vault.py, stress_test.py, multiturn_smoke_test.py
 assets/logo.png      PDF report branding
@@ -62,7 +63,7 @@ venv/Scripts/python.exe scripts/stress_test.py                           # needs
 
 - **The GLiNER2 model loads on the first `ner.get_model()` call**, not at import (slow; downloads weights on the first run). The app warms it at startup. Scripts that time redaction must call `ner.get_model()` before starting the clock.
 - **Patch where a name is used, not where it's defined.** `EntityVault` reads `REGEX_PATTERNS` and `CLIENT_HASH_VAULT` from `zt_firewall.redaction.engine`, so tests patch that module. `main.py` only re-exports them. `CLIENT_HASH_VAULT` is shared by reference: mutate it, never reassign it.
-- **Audit logs and the client vault live in `LOG_DIR`** (`AUDIT_LOG_DIR`, default `/app/logs`, the container volume). Running `main.py` directly on Windows without it writes to `C:\app\logs\`.
+- **All audit-log and client-vault persistence goes through `main.STORAGE`** (`zt_firewall/storage.py`, decision 0011). Never open those files directly: an S3 backend will replace local files on AWS. `STORAGE_BACKEND` picks the backend (default `local`, rooted at `AUDIT_LOG_DIR`, default `/app/logs`). Tests swap `main.STORAGE` per test; new backends must pass `tests/test_storage.py`. Running `main.py` directly on Windows without `AUDIT_LOG_DIR` writes to `C:\app\logs\`.
 - **Streaming is only enabled on `public-research-base`.** The zero-trust lane forces `stream=False` because de-anonymization needs the whole response.
 - **Placeholder format is `[LABEL_N]`**, e.g. `[PERSON_1]`. `internal_token_pattern` relies on it to avoid re-redacting tokens. Changing the format means changing both. Regex-layer labels keep their punctuation (`[ADDRESS_(US)_1]`, `[WEBSITE_/_URL_1]`).
 - **Model IDs in `/v1/models` must be valid LiteLLM model names**, except `elm-tech-auditor` and `public-research-base`, which are handled locally.

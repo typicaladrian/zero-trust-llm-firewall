@@ -63,19 +63,21 @@ Supporting details:
 
 | Component | Trigger | What it does |
 |---|---|---|
-| `write_audit_log` | Each chat request, except Open WebUI background prompts | Appends one JSON line to `/app/logs/audit_YYYY_MM.jsonl` |
-| `log_lifecycle_manager` | Startup, then every 24 h | Gzips past months' logs; deletes archives older than 90 days |
+| `write_audit_log` | Each chat request, except Open WebUI background prompts | `STORAGE.append_audit_entry`: one JSON line in `audit_YYYY_MM.jsonl` (local backend) |
+| `log_lifecycle_manager` | Startup, then every 24 h | `STORAGE.enforce_retention`: gzips past months' logs; deletes archives older than 90 days (local backend) |
 | `generate_audit_report` | `GET /v1/audit/report?month=` | Aggregates a month: totals, entity categories, model usage, ROI (`PRICING` table vs. flagship rate), itemized ledger |
 | `render_executive_pdf` | `GET /v1/audit/pdf`, scheduler, force endpoint | ReportLab PDF: summary, ROI, threat chart, ledger |
 | `automated_report_scheduler` | Midnight on the 1st (container TZ is America/New_York) | Builds last month's PDF and emails it via `send_monthly_audit_email` (Resend) |
 
 ## Data stores
 
+All persistence for the audit log and client vault goes through the `Storage` protocol in `zt_firewall/storage.py` ([decision 0011](decisions/0011-storage-interface.md)). `STORAGE_BACKEND=local` (the only backend today) keeps files in `AUDIT_LOG_DIR` (default `/app/logs`, the Docker volume).
+
 | Data | Location | Contents | Retention |
 |---|---|---|---|
 | Entity vault | Process memory, per request | Placeholder ↔ original value | Discarded when the request ends |
-| Client hash vault | `/app/logs/client_hashes.json` + memory | SHA-256 of normalized client names | Until replaced |
-| Audit log | `/app/logs/audit_YYYY_MM.jsonl(.gz)` | Timestamp, user, model, entity counts, char count, latency, upstream tokens | 90 days |
+| Client hash vault | `client_hashes.json` in the storage root + memory (`engine.CLIENT_HASH_VAULT`) | SHA-256 of normalized client names | Until replaced |
+| Audit log | `audit_YYYY_MM.jsonl(.gz)` in the storage root | Timestamp, user, model, entity counts, char count, latency, upstream tokens | 90 days |
 | Open WebUI data | `open-webui-data` volume | Users, settings, and chats until `scripts/prune_chats.sh` wipes them | Set by how often the prune script runs |
 | Container stdout | Docker logs | Includes the redacted outbound payload (debug print) | Docker's log settings |
 
@@ -92,4 +94,4 @@ Known gaps against these invariants are tracked as GitHub issues labelled `secur
 
 ## Configuration
 
-All settings come from environment variables, listed in [`.env.example`](../.env.example). Things that are still hardcoded and are candidates for configuration: `PII_LABELS`, `REGEX_PATTERNS` and `STOPWORDS` (in `zt_firewall/redaction/patterns.py`); in `zt_firewall/redaction/engine.py`, the GLiNER threshold (0.30) and the chunk size (400 words); in `main.py`, the `PRICING` table, the model list in `/v1/models`, and `/app/logs` paths.
+All settings come from environment variables, listed in [`.env.example`](../.env.example). Things that are still hardcoded and are candidates for configuration: `PII_LABELS`, `REGEX_PATTERNS` and `STOPWORDS` (in `zt_firewall/redaction/patterns.py`); in `zt_firewall/redaction/engine.py`, the GLiNER threshold (0.30) and the chunk size (400 words); in `main.py`, the `PRICING` table and the model list in `/v1/models`; in `zt_firewall/storage.py`, the 90-day audit retention.
