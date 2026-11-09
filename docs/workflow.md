@@ -77,7 +77,7 @@ Merge only when the owner asks, with a merge commit: `gh pr merge <n> --merge`. 
 ## Infrastructure gate (AWS)
 Anything that creates, changes or deletes AWS resources is the owner's decision, like a merge:
 - Run `terraform plan -out tfplan` and show the owner the full plan: what is added, changed or destroyed, and any fixed monthly cost.
-- `terraform apply tfplan` (or `destroy`, `import`, state edits), mutating `aws` commands and `docker push` run only after the owner approves. The guard hook asks for approval however the binary is invoked.
+- `terraform apply tfplan` (or `destroy`, `import`, state edits), mutating `aws` commands and `docker push` run only after the owner approves. The guard hook asks for approval in the Bash and PowerShell tools, including full paths, chained commands and `bash -c`. It reads command text only, so it is one layer of several, not a sandbox (decision 0012). Don't run infrastructure changes through scripts or containers to avoid it.
 - Never print secrets: no decrypted SSM parameters, Secrets Manager values, `terraform output -json/-raw`, `state pull`, or local AWS credential files. Plain `terraform output` hides sensitive values.
 - Never commit state or tfvars (`.gitignore`). Commit `.terraform.lock.hcl`.
 
