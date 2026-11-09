@@ -152,3 +152,82 @@ def test_infrastructure_changes_ask_the_owner(command):
 ])
 def test_everyday_infrastructure_commands_are_allowed(command):
     assert decision(command) == "allow"
+
+
+# ---------------------------------------------------------------------------
+# Bypasses found by the adversarial review of #26. Each was allowed before the fix.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("command", [
+    # $(...) and backticks still run inside double-quoted messages
+    f'gh pr create --title t --body "$(cat {DOT})"',
+    f'git commit -m "x $(cat {DOT})"',
+    f'git commit -m "x `cat {DOT}`"',
+    # git check-ignore exception abused to read files
+    f"git check-ignore --stdin -n -v < {DOT}",
+    f"git check-ignore -n -v $(cat {DOT})",
+    f"git check-ignore -v x & cat {DOT}",
+    # flag spellings Terraform accepts
+    "terraform output --json",
+    "terraform output -json=true",
+    "terraform output --raw function_url",
+    "terraform show --json",
+    # credential-printing AWS calls
+    "aws sso get-role-credentials --role-name r --account-id 1 --access-token t",
+    "aws cognito-identity get-credentials-for-identity --identity-id x",
+    "aws iam create-access-key --user-name ci",
+    "aws kms decrypt --ciphertext-blob fileb://c",
+    """aws ssm get-parameter --cli-input-json '{"Name": "/zt/key", "WithDecryption": true}'""",
+    # globs and directories around secret files
+    "grep -r . ~/.aws",
+    "cat ~/.aws/*",
+    "cat ~/.aws/cred*",
+    "cat infra/*.tfst*",
+    "cat infra/live/prod.tfvars.json",
+])
+def test_review_bypasses_of_secret_rules_are_denied(command):
+    assert decision(command) == "deny"
+
+
+@pytest.mark.parametrize("command", [
+    'git commit -m "$(terraform apply -auto-approve)"',
+    "terraform -chdir=infra/live \\\napply",
+    "docker images & terraform apply",
+    "aws s3 ls & aws s3 rm s3://b/k",
+    "docker compose push",
+    "docker-compose push",
+    "docker --context prod push x",
+    "docker -H tcp://h:2376 push x",
+    "docker manifest push zt:latest",
+    "docker buildx bake --push",
+    "docker buildx imagetools create -t zt:b zt:a",
+    "docker buildx build --output type=registry -t zt:abc .",
+    "terraform test",
+    "terraform workspace delete -force staging",
+    "terraform init -migrate-state",
+    "bash -c 'terraform apply -auto-approve'",
+    "echo $(terraform apply -auto-approve)",
+    "(cd infra/live && terraform apply)",
+    "AWS_PROFILE=dev aws lambda delete-function --function-name zt",
+    "& 'C:\\Program Files\\Amazon\\AWSCLIV2\\aws.exe' s3 rm s3://b/k",
+])
+def test_review_bypasses_of_owner_gates_ask(command):
+    assert decision(command) == "ask"
+
+
+@pytest.mark.parametrize("command", [
+    "docker compose config --services",
+    "docker compose config --quiet",
+    "git commit -m 'Docs: why $(cat x) is blocked in messages'",  # single quotes: bash runs nothing
+    "terraform -chdir=infra/live init",
+    "aws sts get-caller-identity --output json 2>&1",
+])
+def test_review_false_positives_are_allowed(command):
+    assert decision(command) == "allow"
+
+
+def test_powershell_tool_is_guarded_too():
+    # The hook must also be registered for the PowerShell tool, or none of this applies there.
+    settings = json.loads((HOOK.parent.parent / "settings.json").read_text())
+    matchers = [entry["matcher"] for entry in settings["hooks"]["PreToolUse"]]
+    assert any("PowerShell" in m.split("|") and "Bash" in m.split("|") for m in matchers)
