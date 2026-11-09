@@ -1,8 +1,9 @@
 """PreToolUse hook for the Bash and PowerShell tools: guardrails permission rules can't express.
 
 Permission rules match commands by their first word, so they miss a tool invoked by full
-path, after `&&`, inside `bash -c '...'` or a `$(...)` substitution. This hook splits a
-command into segments and words and decides per tool:
+path, after `&&`, inside `bash -c '...'` or a `$(...)` substitution. This hook tokenizes the
+command the way a shell would (quoted strings stay whole, operators become separators),
+looks inside quoted command strings and substitutions, and decides per tool:
 
 - deny: anything that would print secrets or credentials into the transcript
   (.env, Terraform state and tfvars, the local AWS credential folder, decrypted SSM
@@ -15,10 +16,11 @@ command into segments and words and decides per tool:
 
 Deny always wins over ask.
 
-Known limitation (see docs/decisions/0012-agent-guardrails.md): a hook reads command
-*text*. Code it can't see (a Python or boto3 script, a container running the AWS CLI, a
-shell script on disk) isn't inspected. These guardrails are one layer of defense in depth,
-not a sandbox; branch protection and the GitHub deploy approval are enforced server-side.
+Known limitation (docs/decisions/0012-agent-guardrails.md): a hook reads command *text*.
+It can't see code it can't read (a Python or boto3 script, a script on disk, a container
+running the AWS CLI) or shell tricks that build commands at run time (variables, ${IFS},
+brace expansion). It is one layer of defense in depth, not a sandbox; branch protection
+and the GitHub deploy approval are enforced server-side.
 """
 import json
 import re
@@ -26,61 +28,131 @@ import shlex
 import sys
 
 payload = json.load(sys.stdin)
-original = payload.get("tool_input", {}).get("command", "")
+command = payload.get("tool_input", {}).get("command", "")
 
 # Line continuations (bash "\" and PowerShell "`" at line end) join lines into one command.
-original = re.sub(r"[\\`]\r?\n", " ", original)
-
-# Commit/PR/issue messages may mention guarded commands in prose, so blank out the quoted
-# values of message flags. Exceptions: a double-quoted value containing $( or a backtick
-# still runs that code in bash (and PowerShell), so it is kept and inspected.
-MESSAGE_FLAG = r"((?:^|\s)(?:-m|--message|-t|--title|-b|--body)(?:\s+|=))"
-QUOTED = r"(\"(?:\\.|[^\"\\])*\"|'[^']*')"
-
-
-def blank_message(match):
-    value = match.group(2)
-    if value.startswith('"') and ("$(" in value or "`" in value):
-        return match.group(0)
-    return match.group(1) + '""'
-
-
-command = re.sub(MESSAGE_FLAG + QUOTED, blank_message, original, flags=re.DOTALL)
+command = re.sub(r"[\\`]\r?\n", " ", command)
+# `--message="x y"` -> `--message "x y"`, so the quoted value stays one token.
+command = re.sub(r"(\s--(?:message|title|body))=", r"\1 ", command)
 
 DENY, ASK = "deny", "ask"
+OPERATOR_CHARS = "();<>|&\n"
+MESSAGE_FLAGS = {"-m", "--message", "-t", "--title", "-b", "--body"}
+# A heredoc whose delimiter is quoted (<<'EOF') is literal text: nothing in it runs.
+LITERAL_HEREDOC = re.compile(r"^\$\(cat <<-?'(\w+)'\n.*\n\1\s*\)$", re.DOTALL)
+
 findings = []  # (decision, reason)
-SEPARATORS = r"&&|\|\||[;|&\n]"
+
 
 # ---------------------------------------------------------------------------
-# Secret-bearing files, by path, whatever command touches them (globs included)
+# Tokenizing and segmenting
+# ---------------------------------------------------------------------------
+def tokenize(text):
+    """Shell-like words: quotes kept (and kept whole), operators as separate tokens."""
+    lexer = shlex.shlex(text, posix=False, punctuation_chars=OPERATOR_CHARS)
+    lexer.whitespace = " \t\r"
+    lexer.whitespace_split = True
+    lexer.commenters = ""
+    try:
+        return list(lexer)
+    except ValueError:  # unbalanced quotes: fall back to whitespace
+        return text.split()
+
+
+def unquote(token):
+    if len(token) >= 2 and token[0] in "'\"" and token[-1] == token[0]:
+        return token[1:-1]
+    return token
+
+
+def word(token):
+    """A token as a plain word: no quotes, no leftover subshell characters."""
+    return unquote(token).strip("`").lstrip("$")
+
+
+def basename(token):
+    name = re.split(r"[/\\]", word(token))[-1].lower()
+    return name[:-4] if name.endswith(".exe") else name
+
+
+def is_quoted(token):
+    return len(token) >= 2 and token[0] in "'\"" and token[-1] == token[0]
+
+
+def runs_code(token):
+    """A double-quoted string containing $( or a backtick executes it (bash and PowerShell)."""
+    return token.startswith('"') and ("$(" in token or "`" in token) and not LITERAL_HEREDOC.match(unquote(token))
+
+
+def segments(text, depth=0):
+    """Yield each simple command as a list of tokens, with message values replaced by '""',
+    including commands nested in quoted strings (bash -c '...') and substitutions."""
+    current = []
+    for token in tokenize(text) + [";"]:
+        if token and all(c in OPERATOR_CHARS for c in token):
+            if current:
+                yield from finish(current, depth)
+                current = []
+        else:
+            current.append(token)
+
+
+def finish(tokens, depth):
+    is_vcs = basename(tokens[0]) in ("git", "gh") if tokens else False
+    out, nested, i = [], [], 0
+    while i < len(tokens):
+        token = tokens[i]
+        out.append(token)
+        if is_vcs and token in MESSAGE_FLAGS and i + 1 < len(tokens):
+            value = tokens[i + 1]
+            if runs_code(value):
+                nested.append(unquote(value))
+                out.append(value)
+            else:
+                out.append('""')  # a message is text, not a command
+            i += 2
+            continue
+        if depth < 3 and is_quoted(token) and re.search(r"\s", token):
+            nested.append(unquote(token))  # e.g. bash -c "cd infra && terraform apply"
+        i += 1
+    yield out
+    for inner in nested:
+        yield from segments(inner, depth + 1)
+
+
+ALL_SEGMENTS = list(segments(command))
+
+# ---------------------------------------------------------------------------
+# Secret-bearing files, by path (globs included), in every segment
 # ---------------------------------------------------------------------------
 SECRET_PATHS = [
     (r"(?<![\w.-])\.env(?![\w.-])|[/\\]\.env(?![\w.-])",
      ".env holds live API keys and secrets. Use .env.example to see which settings exist."),
-    (r"\.tf(?:st|var)",
+    (r"\.tfst(?:ate|[*?\[])|\.tfvars?(?!s?\.example)(?![\w-])|\.tfvar[*?\[]",
      "Terraform state and tfvars can contain secrets in plain text. Use `terraform state list` or `terraform output` (sensitive values stay hidden)."),
     (r"(?:^|[\s/\\~'\"=])\.aws(?=$|[\s/\\'\"*])",
      "That's the local AWS credential folder. Use `aws sts get-caller-identity` to check who you're signed in as."),
 ]
 
 
-def is_plain_check_ignore(segment):
+def is_plain_check_ignore(tokens):
     """`git check-ignore <paths>` never opens the files. Only that plain form is exempt."""
-    return (re.match(r"\s*git\s+check-ignore\b", segment) is not None
-            and not re.search(r"<|--stdin|\$\(|`", segment))
+    return (len(tokens) >= 2 and basename(tokens[0]) == "git" and word(tokens[1]) == "check-ignore"
+            and not any("--stdin" in t or "$(" in t or "`" in t for t in tokens))
 
 
-path_scan = "\n".join(seg for seg in re.split(SEPARATORS, command) if not is_plain_check_ignore(seg))
-for pattern, reason in SECRET_PATHS:
-    if re.search(pattern, path_scan):
-        findings.append((DENY, reason))
-
-compose_config = re.search(r"\bdocker[ -]compose\b.*\bconfig\b(.*)", command)
-if compose_config and not re.search(r"\s(--quiet|-q|--services|--volumes|--profiles|--images|--hash)\b", compose_config.group(1)):
-    findings.append((DENY, "`docker compose config` prints secrets from .env. Use `docker compose config --quiet` to validate."))
+for tokens in ALL_SEGMENTS:
+    text = " ".join(tokens)
+    if not is_plain_check_ignore(tokens):
+        for pattern, reason in SECRET_PATHS:
+            if re.search(pattern, text):
+                findings.append((DENY, reason))
+    if re.search(r"\bdocker(?:-compose|\s+compose)\b.*\bconfig\b", text) and not re.search(
+            r"\s(--quiet|-q|--services|--volumes|--profiles|--images|--hash)\b", text):
+        findings.append((DENY, "`docker compose config` prints secrets from .env. Use `docker compose config --quiet` to validate."))
 
 # ---------------------------------------------------------------------------
-# GitHub CLI (regex: gh's own subcommands are simple)
+# GitHub CLI (regex on each segment: gh's own subcommands are simple)
 # ---------------------------------------------------------------------------
 GH = r"(?<![\w-])gh(?:\.exe)?[\"']?\s+"
 GH_GATED = [
@@ -89,13 +161,15 @@ GH_GATED = [
     (GH + r"repo\s+(edit|delete|rename|archive)\b", "changing repository settings"),
     (GH + r"api\b.*(-X|--method)\s*=?\s*[\"']?(PUT|PATCH|DELETE|POST)\b", "a mutating GitHub API call"),
 ]
-for pattern, action in GH_GATED:
-    if re.search(pattern, command, flags=re.IGNORECASE):
-        findings.append((ASK, f"This is {action}, which the owner approves (docs/workflow.md, Gate 2)."))
-        break
+for tokens in ALL_SEGMENTS:
+    text = " ".join(tokens)
+    for pattern, action in GH_GATED:
+        if re.search(pattern, text, flags=re.IGNORECASE):
+            findings.append((ASK, f"This is {action}, which the owner approves (docs/workflow.md, Gate 2)."))
+            break
 
 # ---------------------------------------------------------------------------
-# AWS, Terraform and Docker: tokenize each segment and read the subcommand
+# AWS, Terraform and Docker: find the tool in each segment and read its subcommand
 # ---------------------------------------------------------------------------
 TOOLS = {"aws", "terraform", "tofu", "docker", "docker-compose"}
 AWS_GLOBAL_OPTIONS_WITH_VALUE = {
@@ -106,35 +180,12 @@ DOCKER_GLOBAL_OPTIONS_WITH_VALUE = {"--context", "-c", "--host", "-H", "--config
 AWS_READ_PREFIXES = ("describe-", "list-", "get-", "head-", "batch-get-", "lookup-", "search-",
                      "filter-", "validate-", "estimate-", "wait")
 AWS_READ_OPS = {"tail", "scan", "query", "help", ""}
-AWS_CREDENTIAL_OP = re.compile(r"credential|password|token|access-key|^assume-role|^decrypt$|^generate-data-key")
+# Operations whose output contains credentials, tokens, secrets or decrypted data...
+AWS_CREDENTIAL_OP = re.compile(r"credential|password|token|secret|access-key|^assume-role|^decrypt$|^generate-data-key")
+# ...except these, which only return metadata about them.
+AWS_CREDENTIAL_METADATA_OPS = {"get-caller-identity", "get-credential-report", "get-access-key-last-used",
+                               "get-access-key-info", "generate-credential-report"}
 INFRA_REASON = "This changes AWS infrastructure or ships an image, which the owner approves (docs/workflow.md, infrastructure gate)."
-
-
-def clean(token):
-    """Strip subshell syntax around a word: $(cmd ...), (cmd ...), `cmd ...`."""
-    return token.lstrip("$(`").rstrip(")`")
-
-
-def tool_calls(cmd, depth=0):
-    """Yield (tool, args) for each aws / terraform / tofu / docker invocation, including ones
-    nested in quoted strings such as `bash -c '...'` or `pwsh -Command "..."`."""
-    for segment in re.split(SEPARATORS, cmd):
-        try:
-            tokens = shlex.split(segment, posix=True)
-        except ValueError:
-            tokens = segment.split()
-        tokens = [clean(t) for t in tokens]
-        found = False
-        for i, token in enumerate(tokens):
-            if not found:
-                name = re.split(r"[/\\]", token)[-1].lower()
-                name = name[:-4] if name.endswith(".exe") else name
-                if name in TOOLS:
-                    found = True
-                    yield name, tokens[i + 1:]
-                    continue
-            if depth < 2 and " " in token:  # a quoted command string: look inside it
-                yield from tool_calls(token, depth + 1)
 
 
 def positional(args, options_with_value=()):
@@ -163,16 +214,15 @@ def aws_decision(args):
     service, op = words[0], (words[1] if len(words) > 1 else "")
     if service in ("login", "logout", "help"):
         return None
-    if op != "get-caller-identity" and AWS_CREDENTIAL_OP.search(op):
-        return DENY, "This prints AWS credentials, a token or decrypted data into the transcript."
+    if (AWS_CREDENTIAL_OP.search(op) and not op.startswith("list-")
+            and op not in AWS_CREDENTIAL_METADATA_OPS):
+        return DENY, "This prints AWS credentials, a token, a secret or decrypted data into the transcript."
     if service == "configure":
         if op == "get" and re.search(r"secret|session_token|access_key", " ".join(args)):
             return DENY, "This prints stored AWS credentials."
         return None
     if service == "ssm" and op.startswith("get-parameter") and flags(args) & {"with-decryption", "cli-input-json", "cli-input-yaml"}:
         return DENY, "This can print decrypted secrets. Leave secrets in SSM; the app reads them at runtime."
-    if service == "secretsmanager" and op in ("get-secret-value", "batch-get-secret-value"):
-        return DENY, "This prints a secret value."
     if service == "s3":
         return None if op == "ls" else (ASK, INFRA_REASON)
     if op in AWS_READ_OPS or op.startswith(AWS_READ_PREFIXES):
@@ -210,26 +260,31 @@ def docker_decision(args, compose=False):
     words = positional(args, DOCKER_GLOBAL_OPTIONS_WITH_VALUE)
     if compose:
         words = ["compose"] + words
-    joined = " ".join(args)
     pushes = (
         words[:1] == ["push"]
         or words[:2] in (["image", "push"], ["manifest", "push"], ["compose", "push"])
         or words[:3] == ["buildx", "imagetools", "create"]
-        or ("--push" in args and words[:1] in (["build"], ["buildx"]))
-        or re.search(r"type=registry|push=true", joined) is not None
+        or ("--push" in args and words[:1] in (["build"], ["buildx"], ["compose"]))
+        or re.search(r"type=registry|push=true", " ".join(args)) is not None
     )
     return (ASK, INFRA_REASON) if pushes else None
 
 
-for tool, args in tool_calls(command):
-    if tool == "aws":
-        result = aws_decision(args)
-    elif tool in ("terraform", "tofu"):
-        result = terraform_decision(args)
-    else:
-        result = docker_decision(args, compose=(tool == "docker-compose"))
-    if result:
-        findings.append(result)
+for tokens in ALL_SEGMENTS:
+    for i, token in enumerate(tokens):
+        tool = basename(token)
+        if tool not in TOOLS:
+            continue
+        args = [word(t) for t in tokens[i + 1:]]
+        if tool == "aws":
+            result = aws_decision(args)
+        elif tool in ("terraform", "tofu"):
+            result = terraform_decision(args)
+        else:
+            result = docker_decision(args, compose=(tool == "docker-compose"))
+        if result:
+            findings.append(result)
+        break  # one tool per simple command; nested commands are their own segments
 
 # ---------------------------------------------------------------------------
 if findings:
