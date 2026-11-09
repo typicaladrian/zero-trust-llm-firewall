@@ -15,6 +15,7 @@
       "Edit(**/*.tfstate)",
       "Edit(**/*.tfstate.*)",
       "Read(**/*.tfvars)",
+      "Read(**/*.tfvars.json)",
       "Read(~/.aws/**)",
       "Edit(~/.aws/**)",
       "Bash(git push origin main)",
@@ -52,7 +53,7 @@
   "hooks": {
     "PreToolUse": [
       {
-        "matcher": "Bash",
+        "matcher": "Bash|PowerShell",
         "hooks": [
           {
             "type": "command",
