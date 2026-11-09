@@ -74,5 +74,12 @@ The tree must be clean. If it isn't, stop and ask the owner what to do with the 
 Report to the owner: PR link, CI status, the reviewer's verdict, eval numbers, and **anything not verified**. Then stop.
 Merge only when the owner asks, with a merge commit: `gh pr merge <n> --merge`. Never squash, never force-push, never bypass CI.
 
+## Infrastructure gate (AWS)
+Anything that creates, changes or deletes AWS resources is the owner's decision, like a merge:
+- Run `terraform plan -out tfplan` and show the owner the full plan: what is added, changed or destroyed, and any fixed monthly cost.
+- `terraform apply tfplan` (or `destroy`, `import`, state edits), mutating `aws` commands and `docker push` run only after the owner approves. The guard hook asks for approval in the Bash and PowerShell tools, including full paths, chained commands and `bash -c`. It reads command text only, so it is one layer of several, not a sandbox (decision 0012). Don't run infrastructure changes through scripts or containers to avoid it.
+- Never print secrets: no decrypted SSM parameters, Secrets Manager values, `terraform output -json/-raw`, `state pull`, or local AWS credential files. Plain `terraform output` hides sensitive values.
+- Never commit state or tfvars (`.gitignore`). Commit `.terraform.lock.hcl`.
+
 ## When stuck
 Ask the owner instead of guessing. This applies especially to anything touching redaction behavior, data persistence, secrets, or a past decision record.
