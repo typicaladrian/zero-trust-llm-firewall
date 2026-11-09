@@ -13,3 +13,13 @@ private/
 # Claude Code: personal overrides and hook cache
 .claude/settings.local.json
 .claude/hooks/.last-green
+
+# Terraform: provider downloads, state (can hold secrets), variable files, saved plans.
+# .terraform.lock.hcl IS committed: it pins provider versions.
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+*.tfvars.json
+tfplan
+crash.log

@@ -73,7 +73,7 @@ def test_everyday_commands_are_allowed(command):
 # tfvars or local AWS credentials is never allowed, however the binary is spelled.
 # ---------------------------------------------------------------------------
 
-AWS = '"C:\Program Files\Amazon\AWSCLIV2\aws.exe"'
+AWS = r'"C:\Program Files\Amazon\AWSCLIV2\aws.exe"'  # raw string: "\a" would otherwise be a bell character
 STATE = "terraform" + ".tfstate"
 
 
@@ -82,6 +82,8 @@ STATE = "terraform" + ".tfstate"
     "aws ssm get-parameters-by-path --path /zt --with-decryption --recursive",
     "aws secretsmanager get-secret-value --secret-id zt/key",
     "aws configure export-credentials --format env",
+    "aws ecr get-login-password --region us-east-1",
+    "aws sts get-session-token",
     f"{AWS} configure export-credentials",
     "terraform state pull",
     "terraform -chdir=infra/live output -json",
@@ -89,10 +91,11 @@ STATE = "terraform" + ".tfstate"
     "terraform show -json",
     "terraform console",
     f"cat infra/live/{STATE}",
-    f"type infra\live\{STATE}.backup",
+    rf"type infra\live\{STATE}.backup",
     "cat infra/live/prod.tfvars",
     "cat ~/.aws/credentials",
     "ls ~/.aws/login/cache",
+    f"git check-ignore -q infra/{STATE} && cat infra/{STATE}",  # the exception covers check-ignore only
 ])
 def test_secret_and_state_access_is_denied(command):
     assert decision(command) == "deny"
@@ -113,7 +116,7 @@ def test_secret_and_state_access_is_denied(command):
     "aws lambda invoke --function-name zt-proxy out.json",
     "aws iam create-role --role-name x --assume-role-policy-document file://p.json",
     f"{AWS} ecr delete-repository --repository-name zt",
-    "/c/Program\ Files/Amazon/AWSCLIV2/aws.exe budgets create-budget --account-id 1 --budget file://b.json",
+    r"/c/Program\ Files/Amazon/AWSCLIV2/aws.exe budgets create-budget --account-id 1 --budget file://b.json",
     "docker push 123.dkr.ecr.us-east-1.amazonaws.com/zt:abc",
     "docker image push zt:abc",
     "docker buildx build --platform linux/amd64 --push -t zt:abc .",
@@ -145,6 +148,7 @@ def test_infrastructure_changes_ask_the_owner(command):
     "docker images",
     "git commit -m 'Docs: explain when terraform apply needs approval'",
     "git add .gitignore infra/live/main.tf",
+    f"git check-ignore -v infra/live/{STATE} infra/live/prod.tfvars",
 ])
 def test_everyday_infrastructure_commands_are_allowed(command):
     assert decision(command) == "allow"

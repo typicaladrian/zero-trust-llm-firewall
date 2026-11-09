@@ -10,6 +10,13 @@
     "deny": [
       "Read(**/.env)",
       "Edit(**/.env)",
+      "Read(**/*.tfstate)",
+      "Read(**/*.tfstate.*)",
+      "Edit(**/*.tfstate)",
+      "Edit(**/*.tfstate.*)",
+      "Read(**/*.tfvars)",
+      "Read(~/.aws/**)",
+      "Edit(~/.aws/**)",
       "Bash(git push origin main)",
       "Bash(git push origin main *)",
       "Bash(git push origin HEAD:main *)",
@@ -22,7 +29,10 @@
       "Bash(gh repo edit *)",
       "Bash(gh api -X PUT *)",
       "Bash(gh api -X PATCH *)",
-      "Bash(gh api -X DELETE *)"
+      "Bash(gh api -X DELETE *)",
+      "Bash(terraform apply *)",
+      "Bash(terraform destroy *)",
+      "Bash(docker push *)"
     ],
     "allow": [
       "Bash(venv/Scripts/python.exe -m pytest *)",
