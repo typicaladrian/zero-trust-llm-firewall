@@ -21,7 +21,7 @@ Judgment goes to the strongest model; volume goes to the cheaper one.
 
 - A session started on another model (chosen in the app's model picker, or passed when one session starts another) keeps that model. **Start implementation sessions on Sonnet.** Switch a session to Opus only for architecture discussions or a fix the planner marks as hard.
 - Don't put `model:` in a skill's frontmatter for this. It only lasts until the end of the turn, and both skills stop at Gate 1, so the implementation turns after approval would fall back to the session model anyway.
-- Sonnet writing security-sensitive code is acceptable because it never works alone: the plan comes from Opus, tests are written first, CI runs both tiers, and the Opus reviewer audits the diff before the owner sees it.
+- Sonnet writing security-sensitive code is acceptable because it never works alone: the plan comes from Opus, tests are written first, CI runs the fast, model and container jobs, and the Opus reviewer audits the diff before the owner sees it.
 
 ## 0. Start clean
 ```bash

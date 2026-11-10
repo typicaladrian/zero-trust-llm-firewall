@@ -34,3 +34,4 @@ Records 0001–0007 were reconstructed in October 2026 from the commit history a
 | [0010](0010-lazy-ner-loading-with-startup-warmup.md) | Load the NER model lazily, warm it at app startup | Accepted |
 | [0011](0011-storage-interface.md) | Storage interface for the audit log and client vault | Accepted |
 | [0012](0012-agent-guardrails.md) | Agent guardrails: owner-gated infrastructure, no secret reads, defense in depth | Accepted |
+| [0013](0013-lambda-container-image.md) | Deploy to AWS Lambda as a container image with the Lambda Web Adapter | Accepted |

@@ -66,6 +66,16 @@ For development with hot reload:
 docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
 ```
 
+### Check the image (Lambda-ready, offline)
+
+The same script CI runs builds the image and runs it the way AWS Lambda will: read-only filesystem, non-root user, no network. It needs Docker and about 12 GB of free disk, and creates nothing in the cloud.
+
+```bash
+bash scripts/container_check.sh
+```
+
+Images that will be pushed to AWS Lambda must be built with `docker build --provenance=false` (Lambda rejects attestation manifests); the script does this.
+
 ## API
 
 | Method | Path | Purpose |
