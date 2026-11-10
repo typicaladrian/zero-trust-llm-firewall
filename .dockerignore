@@ -1,0 +1,23 @@
+# Files that must never enter the Docker build context (issue #26, step 2).
+# The Dockerfile only copies named files today, so this is a second line of defence: it still
+# protects us if someone later writes "COPY . ." (non-negotiable #2: never ship .env).
+# tests/test_container_image.py and scripts/container_check.sh verify these rules.
+
+# Secrets and local configuration (also catches .env.local, .env.canary ...)
+.env*
+
+# Local environments, version control, caches
+venv/
+.git/
+**/__pycache__
+.pytest_cache/
+
+# Local-only business notes, agent settings, old code
+private/
+.claude/
+depreciated/
+
+# Not part of the runtime image
+evals/
+tests/
+infra/
