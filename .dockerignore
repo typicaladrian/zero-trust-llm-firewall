@@ -1,16 +1,28 @@
 # Files that must never enter the Docker build context (issue #26, step 2).
 # The Dockerfile only copies named files today, so this is a second line of defence: it still
-# protects us if someone later writes "COPY . ." (non-negotiable #2: never ship .env).
+# protects us if someone later writes "COPY . .". (non-negotiable #2: never ship .env).
 # tests/test_container_image.py and scripts/container_check.sh verify these rules.
+#
+# .dockerignore patterns are anchored at the build-context root: ".env*" would NOT match
+# "scripts/.env". "**/" makes a pattern match at any depth. Don't add "!" exceptions (a test
+# forbids them): they can silently bring a secret back in.
 
-# Secrets and local configuration (also catches .env.local, .env.canary ...)
-.env*
+# Secrets and local configuration (also catches .env.local, .env.canary ...), at any depth
+**/.env*
 
-# Local environments, version control, caches
+# Terraform state and variable files can hold secrets; saved plans too
+**/*.tfstate
+**/*.tfstate.*
+**/*.tfvars
+**/*.tfvars.json
+**/tfplan
+
+# Local environments, version control, caches, scratch databases
 venv/
 .git/
 **/__pycache__
 .pytest_cache/
+audit_log.db
 
 # Local-only business notes, agent settings, old code
 private/
