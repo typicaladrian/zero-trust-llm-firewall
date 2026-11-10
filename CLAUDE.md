@@ -51,6 +51,7 @@ venv/Scripts/python.exe -m pytest                                        # fast 
 ZT_REAL_MODEL=1 venv/Scripts/python.exe -m pytest -m model               # model tier: real GLiNER2, ~40 s once the model is cached
 venv/Scripts/python.exe evals/benchmark.py                               # full CUAD recall benchmark, about 13 min on CPU
 venv/Scripts/python.exe scripts/stress_test.py                           # needs the proxy running; uses the auditor lane (no API cost)
+bash scripts/container_check.sh                                          # build the image and run it read-only, non-root, no network (what the CI container job runs); needs Docker, ~12 GB disk
 ```
 
 - Local venv is Python 3.13; the Docker image is Python 3.11. Keep code compatible with 3.11. Dev dependencies: `requirements-dev.txt`.
@@ -64,6 +65,7 @@ venv/Scripts/python.exe scripts/stress_test.py                           # needs
 - **The GLiNER2 model loads on the first `ner.get_model()` call**, not at import (slow; downloads weights on the first run). The app warms it at startup. Scripts that time redaction must call `ner.get_model()` before starting the clock.
 - **Patch where a name is used, not where it's defined.** `EntityVault` reads `REGEX_PATTERNS` and `CLIENT_HASH_VAULT` from `zt_firewall.redaction.engine`, so tests patch that module. `main.py` only re-exports them. `CLIENT_HASH_VAULT` is shared by reference: mutate it, never reassign it.
 - **All audit-log and client-vault persistence goes through `main.STORAGE`** (`zt_firewall/storage.py`, decision 0011). Never open those files directly: an S3 backend will replace local files on AWS. `STORAGE_BACKEND` picks the backend (default `local`, rooted at `AUDIT_LOG_DIR`, default `/app/logs`). Tests swap `main.STORAGE` per test; new backends must pass `tests/test_storage.py`. Running `main.py` directly on Windows without `AUDIT_LOG_DIR` writes to `C:\app\logs\`.
+- **The image is offline and Lambda-ready** (decision 0013). The model is baked into `/opt/hf` and `HF_HUB_OFFLINE=1` is set, so changing `MODEL_NAME` in `zt_firewall/redaction/ner.py` needs an image rebuild. CPU-only PyTorch must stay installed before `requirements.txt`, and the Lambda Web Adapter stays pinned by digest. Lambda-only settings (`AUDIT_LOG_DIR`, `HOME`, `AWS_LWA_*`) belong in Terraform, not the Dockerfile. On Docker Desktop, `docker images` double-counts the containerd store (compressed plus unpacked); the real size is the layer sum, which `scripts/container_check.sh` measures.
 - **Streaming is only enabled on `public-research-base`.** The zero-trust lane forces `stream=False` because de-anonymization needs the whole response.
 - **Placeholder format is `[LABEL_N]`**, e.g. `[PERSON_1]`. `internal_token_pattern` relies on it to avoid re-redacting tokens. Changing the format means changing both. Regex-layer labels keep their punctuation (`[ADDRESS_(US)_1]`, `[WEBSITE_/_URL_1]`).
 - **Model IDs in `/v1/models` must be valid LiteLLM model names**, except `elm-tech-auditor` and `public-research-base`, which are handled locally.
