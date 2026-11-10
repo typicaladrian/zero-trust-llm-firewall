@@ -11,8 +11,11 @@ It proves, with synthetic data only:
   2. the zero-trust auditor lane redacts an SSN (regex layer) and a person name (GLiNER2 model),
      so the real model really runs offline                                           -> P10, P7
   3. the audit file written on the way holds metadata only, never the raw values    -> P4, P5
-  4. PyTorch is the CPU build (a CUDA build would not fit in Lambda's 10 GB)
-  5. no .env file was baked into the image                                          -> non-negotiable #2
+  4. PyTorch is the CPU build. A CUDA build would still fit under Lambda's 10 GB (about 8 GB vs
+     3 GB) so the size gate can't catch it; if gliner2's requirements ever force pip to replace the
+     CPU wheel, this is the check that notices.
+  5. no .env file was baked into the image. Defence in depth only: the Dockerfile copies named
+     files, so this can't fail today; the real guard is .dockerignore (container_check.sh, step 3)
 """
 import glob
 import json
@@ -81,7 +84,9 @@ def main() -> int:
     check(FAKE_SSN not in redacted, "auditor output does not contain the raw SSN")
     check(re.search(r"\[SOCIAL_SECURITY_NUMBER_\d+\]", redacted) is not None,
           "auditor output has an SSN placeholder")
-    check(FAKE_NAME not in redacted, "auditor output does not contain the raw person name (GLiNER2)")
+    # Check each part of the name: redacting only "Gonzalez" and leaking "Maria" must fail too.
+    for part in FAKE_NAME.split():
+        check(part not in redacted, f"auditor output does not contain {part!r} (GLiNER2 name redaction)")
     check(len(set(re.findall(r"\[[A-Z_()/]+_\d+\]", redacted))) >= 2,
           "auditor output has at least two distinct placeholders (SSN and name)")
 
@@ -89,7 +94,8 @@ def main() -> int:
     check(bool(audit_files), f"audit file was written under {AUDIT_DIR}")
     for path in audit_files:
         text = open(path, encoding="utf-8").read()
-        check(FAKE_SSN not in text and FAKE_NAME not in text, f"{os.path.basename(path)} holds metadata only")
+        leaked = [v for v in (FAKE_SSN, *FAKE_NAME.split()) if v in text]
+        check(not leaked, f"{os.path.basename(path)} holds metadata only")
 
     import torch                                   # heavy import, but already installed
     check(torch.version.cuda is None, f"PyTorch is the CPU build (torch.version.cuda={torch.version.cuda})")

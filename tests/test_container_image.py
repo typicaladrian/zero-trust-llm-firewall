@@ -5,7 +5,9 @@ These tests read the build files as text. They cannot prove the image builds, fi
 they do is stop someone from quietly reordering or deleting the lines that make it work:
 
   * CPU-only PyTorch must be installed BEFORE requirements.txt, or pip pulls the CUDA wheels
-    (12.5 GB image instead of under 10 GB).
+    (about 5 GB bigger: roughly 8 GB instead of 3 GB, slower to pull and start). A static test
+    cannot see a LATER silent swap, e.g. gliner2 asking for a torch the CPU build doesn't satisfy;
+    the smoke test's `torch.version.cuda is None` check catches that one.
   * HF_HOME must be set BEFORE the model download and HF_HUB_OFFLINE AFTER it.
   * The Lambda Web Adapter sees raw prompts on Lambda, so it is pinned by digest.
   * .dockerignore keeps secrets and dev files out of the build context (non-negotiable #2).
@@ -16,7 +18,6 @@ compared), not matched as exact text, so reformatting it doesn't break these tes
 Promises protected: P10 (offline), P1 (adapter supply chain), non-negotiable #2 (.env).
 """
 import re
-from fnmatch import fnmatch
 from pathlib import Path
 
 import pytest
@@ -84,8 +85,9 @@ def index_of_run(instructions, *needles):
 # --- PyTorch: CPU wheels first ------------------------------------------------------------------
 
 def test_cpu_torch_installed_before_requirements(instructions):
-    """P10 / Lambda size limit: pip resolves torch from requirements.txt to the CUDA build unless a
-    CPU build is already installed, which makes the image 12.5 GB (Lambda allows 10 GB)."""
+    """P10 / image size: pip resolves torch from requirements.txt to the CUDA build unless a CPU
+    build is already installed, which adds about 5 GB (8 GB instead of 3 GB) for a GPU that
+    Lambda doesn't have."""
     cpu = index_of_run(instructions, "torch", CPU_TORCH_INDEX)
     reqs = index_of_run(instructions, "-r requirements.txt")
     assert cpu is not None, "Dockerfile must install torch from the CPU-only index"
@@ -160,31 +162,83 @@ def dockerignore_patterns() -> list[str]:
     return [ln for ln in lines if ln and not ln.startswith("#") and not ln.startswith("!")]
 
 
-def is_ignored(name: str, patterns: list[str]) -> bool:
-    """Roughly how Docker applies .dockerignore for a top-level name (good enough for this repo)."""
-    for pattern in patterns:
-        pattern = pattern.rstrip("/")
-        if pattern.startswith("**/"):
-            pattern = pattern[3:]
-        if fnmatch(name, pattern):
-            return True
-    return False
+def _pattern_regex(pattern: str) -> re.Pattern:
+    """Translate one .dockerignore pattern into a regex over slash-separated paths.
+
+    Docker's rules (a subset, enough for this repo): patterns are matched from the context root,
+    so `.env*` does NOT match `scripts/.env`; `**/` matches any number of leading directories;
+    `*` and `?` never cross a `/`; matching is case-sensitive.
+    """
+    pattern = pattern.strip("/")
+    out, i = "", 0
+    while i < len(pattern):
+        if pattern.startswith("**/", i):
+            out += "(?:.*/)?"
+            i += 3
+        elif pattern[i] == "*":
+            out += "[^/]*"
+            i += 1
+        elif pattern[i] == "?":
+            out += "[^/]"
+            i += 1
+        else:
+            out += re.escape(pattern[i])
+            i += 1
+    return re.compile(out)
 
 
-@pytest.mark.parametrize("name", [
-    ".env",            # non-negotiable #2
+def is_ignored(path: str, patterns: list[str]) -> bool:
+    """True if Docker would leave `path` out of the build context.
+
+    A pattern that matches a directory excludes everything inside it, so every parent prefix of
+    the path is tried too.
+    """
+    parts = path.split("/")
+    prefixes = ["/".join(parts[:n]) for n in range(1, len(parts) + 1)]
+    return any(_pattern_regex(p).fullmatch(prefix) for p in patterns for prefix in prefixes)
+
+
+@pytest.mark.parametrize("path", [
+    ".env",                      # non-negotiable #2
     ".env.local",
+    "scripts/.env",              # .dockerignore is root-anchored: needs `**/.env*` to catch these
+    "docs/deep/.env.production",
     "venv",
     ".git",
-    "private",         # local business notes (gitignored, but still on the owner's disk)
+    "private",                   # local business notes (gitignored, but still on the owner's disk)
     "evals",
+    "evals/output/report.txt",
     "tests",
+    "tests/conftest.py",
+    "zt_firewall/__pycache__",
     "__pycache__",
     ".claude",
-    "infra",           # Terraform files (step 4+)
+    "infra",                     # Terraform files (step 4+)
+    "terraform.tfstate",         # state can hold secrets (.gitignore already keeps it out of git)
+    "scripts/prod.tfvars",
+    "audit_log.db",
 ])
-def test_dockerignore_excludes(name):
-    assert is_ignored(name, dockerignore_patterns()), f"{name} must be in .dockerignore"
+def test_dockerignore_excludes(path):
+    assert is_ignored(path, dockerignore_patterns()), f"{path} must be excluded by .dockerignore"
+
+
+def test_dockerignore_has_no_exceptions():
+    """A `!pattern` line re-includes files and could silently bring a secret back into the build
+    context. If one is ever needed, review it against the secret paths above first."""
+    path = ROOT / ".dockerignore"
+    negations = [ln.strip() for ln in path.read_text(encoding="utf-8").splitlines()
+                 if ln.strip().startswith("!")]
+    assert not negations, f"unexpected re-include lines in .dockerignore: {negations}"
+
+
+def test_dockerignore_matcher_follows_docker_semantics():
+    """Guards the matcher itself, so the exclude tests above can't pass for the wrong reason."""
+    assert is_ignored(".env", [".env*"])
+    assert not is_ignored("scripts/.env", [".env*"])          # root-anchored
+    assert is_ignored("scripts/.env", ["**/.env*"])
+    assert not is_ignored(".ENV", [".env*"])                  # case-sensitive
+    assert is_ignored("tests/test_x.py", ["tests/"])          # a directory excludes its contents
+    assert not is_ignored("main.py", ["*.md"])
 
 
 @pytest.mark.parametrize("name", ["assets", "assets/logo.png", "main.py", "zt_firewall", "requirements.txt"])
