@@ -8,7 +8,8 @@ ENV PYTHONUNBUFFERED=1
 WORKDIR /app
 
 # CPU-only PyTorch FIRST. requirements.txt (via gliner2) would otherwise pull the default CUDA
-# build, which is about 4 GB bigger, slower to start and useless on a CPU-only Lambda. Once a CPU
+# build, which is about 5 GB bigger (8 GB vs 3 GB), slower to pull and start, and useless on a
+# CPU-only Lambda. Once a CPU
 # torch is installed, pip sees the requirement as already satisfied and leaves it alone.
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu
