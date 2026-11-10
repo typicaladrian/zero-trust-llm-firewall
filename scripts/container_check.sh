@@ -35,8 +35,17 @@ echo "== 1. Build (--provenance=false: Lambda rejects images with attestation ma
 docker build --provenance=false -t "$IMAGE" .
 
 echo "== 2. Image size must stay under Lambda's limit"
-size=$(docker image inspect "$IMAGE" --format '{{.Size}}')
-echo "image size: $size bytes (limit $MAX_BYTES)"
+# Lambda counts the uncompressed size of all layers. Docker reports that differently by image store:
+#  - classic store (CI): `inspect .Size` is the unpacked size
+#  - containerd store (Docker Desktop): `inspect .Size` is the COMPRESSED size (4.5 GB for an 8 GB
+#    image), and `docker images` shows compressed + unpacked added together (12.5 GB)
+# The sum of the layer sizes in `docker history` is the unpacked size on both, so gate on the
+# larger of the two numbers.
+reported=$(docker image inspect "$IMAGE" --format '{{.Size}}')
+unpacked=$(docker history --human=false --no-trunc --format '{{.Size}}' "$IMAGE" | awk '{s+=$1} END {printf "%d", s}')
+case "$unpacked" in ''|0|*[!0-9]*) echo "FAIL: could not measure the layer sizes"; exit 1 ;; esac
+size=$(( reported > unpacked ? reported : unpacked ))
+echo "image size: $size bytes (inspect: $reported, layer sum: $unpacked, limit $MAX_BYTES)"
 if [ "$size" -ge "$MAX_BYTES" ]; then
   echo "FAIL: image is too big for Lambda"
   exit 1
